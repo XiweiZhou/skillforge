@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-SkillForge - Unified Interface
-The main entry point that combines execution and learning engines
+SkillForge - Self-Improving Agents with Closed-Loop Learning
+Unified interface with real knowledge application
 """
 
 import logging
@@ -9,13 +9,12 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, List, Any
 from dataclasses import dataclass
-import sys
 
-# Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from execution_engine import ExecutionEngine, Task, TaskPriority, ExecutionStatus, ExecutionConfig
-from learning_engine import LearningEngine
+from knowledge import KnowledgeBase
+from skills import (
+    SkillRegistry, BaseSkill, ExecutionContext, ExecutionResult, ExecutionStatus
+)
+from learning import LearningEngine, LearningMetrics
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,197 +27,181 @@ logger = logging.getLogger("SkillForge")
 class ForgeResult:
     """Result of a SkillForge execution"""
     task_id: str
+    skill_name: str
     success: bool
-    outputs: List[Path]
+    output: Any
     errors: List[str]
-    duration: float
-    skills_used: List[str]
-    learned_something: bool = False
-    
+    warnings: List[str]
+    rules_applied: List[str]
+    execution_time_ms: float
+
     def __str__(self):
-        status = "✓ SUCCESS" if self.success else "✗ FAILED"
-        return f"{status} ({self.duration:.2f}s) - {len(self.outputs)} outputs, {len(self.errors)} errors"
+        status = "SUCCESS" if self.success else "FAILED"
+        return f"[{status}] {self.skill_name}: {len(self.rules_applied)} rules, {self.execution_time_ms:.1f}ms"
 
 
 class SkillForge:
     """
-    Unified interface for self-improving task execution
-    
-    Usage:
-        forge = SkillForge()
-        result = forge.execute("Create a PowerPoint about AI")
-        print(result)
-    
-    Features:
-        - Automatic skill selection
-        - Intelligent execution planning
-        - Error recovery with learning
-        - Cumulative improvement over time
+    SkillForge v2 - Unified interface for self-improving task execution
+
+    Key differences from v1:
+    - Knowledge rules actually influence execution
+    - Skills produce real outputs
+    - Closed-loop learning feedback
+    - Proper validation support
     """
-    
-    def __init__(self, 
-                 skills_dir: Optional[Path] = None,
-                 data_dir: Optional[Path] = None,
-                 config: Optional[ExecutionConfig] = None):
+
+    def __init__(self,
+                 data_dir: Optional[Path] = None):
         """
-        Initialize SkillForge
-        
+        Initialize SkillForge v2
+
         Args:
-            skills_dir: Directory containing skills (default: /mnt/skills)
             data_dir: Directory for learning data (default: ./data/learning)
-            config: Custom execution configuration
         """
-        self.config = config or ExecutionConfig()
-        
-        # Set up directories
-        if skills_dir:
-            self.config.SKILLS_BASE_PATH = skills_dir
-        
-        self.data_dir = data_dir or Path("./data/learning")
+        self.data_dir = Path(data_dir or "./data/learning")
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Initialize engines
-        logger.info("Initializing SkillForge...")
-        self.execution_engine = ExecutionEngine(self.config)
-        self.learning_engine = LearningEngine(
-            skills_dir=self.config.SKILLS_BASE_PATH,
-            data_dir=self.data_dir
-        )
-        
+
+        # Initialize knowledge base
+        self.knowledge_base = KnowledgeBase(self.data_dir)
+
+        # Initialize skill registry
+        self.skill_registry = SkillRegistry(self.knowledge_base)
+
+        # Initialize learning engine
+        self.learning_engine = LearningEngine(self.knowledge_base, self.data_dir)
+
         # Statistics
         self.tasks_executed = 0
         self.tasks_succeeded = 0
         self.tasks_failed = 0
-        self.learning_cycles_triggered = 0
-        
-        logger.info("SkillForge ready!")
-    
-    def execute(self, 
-                description: str,
-                files: Optional[List[str]] = None,
-                priority: str = "normal") -> ForgeResult:
+
+        logger.info(f"SkillForge initialized with {len(self.skill_registry.list_skills())} skills")
+
+    def execute(self,
+               task_description: str,
+               skill_name: Optional[str] = None,
+               context_overrides: Optional[Dict[str, Any]] = None) -> ForgeResult:
         """
-        Execute a task with automatic learning
-        
+        Execute a task with automatic skill selection and knowledge application
+
         Args:
-            description: Natural language task description
-            files: Optional list of input files
-            priority: Task priority (critical/high/normal/low)
-        
+            task_description: Natural language task description
+            skill_name: Optional specific skill to use (otherwise auto-selected)
+            context_overrides: Optional context values to set
+
         Returns:
             ForgeResult with execution details
-        
-        Example:
-            result = forge.execute(
-                "Create a report from sales_data.xlsx",
-                files=["sales_data.xlsx"],
-                priority="high"
-            )
         """
-        logger.info(f"Executing task: {description}")
-        
-        # Convert priority
-        priority_map = {
-            'critical': TaskPriority.CRITICAL,
-            'high': TaskPriority.HIGH,
-            'normal': TaskPriority.NORMAL,
-            'low': TaskPriority.LOW,
-        }
-        task_priority = priority_map.get(priority.lower(), TaskPriority.NORMAL)
-        
-        # Create task
-        task = self.execution_engine.create_task(
-            description=description,
-            user_files=files,
-            priority=task_priority
-        )
-        
-        # Execute with error tracking
-        learned_something = False
-        try:
-            result = self.execution_engine.execute_task(task)
-            
-            # Record success
-            if result.status == ExecutionStatus.COMPLETED:
-                self.learning_engine.record_task_success(result)
-                self.tasks_succeeded += 1
-                logger.info(f"Task completed successfully")
-            else:
-                self.tasks_failed += 1
-                logger.warning(f"Task failed: {result.status.value}")
-            
-        except Exception as e:
-            logger.error(f"Task execution error: {e}")
+        self.tasks_executed += 1
+        task_id = f"task_{self.tasks_executed}"
+
+        # Select skill
+        if skill_name:
+            skill = self.skill_registry.get(skill_name)
+        else:
+            skill = self.skill_registry.get_for_task(task_description)
+
+        if not skill:
             self.tasks_failed += 1
-            
-            # Record error and attempt learning
-            if task.selected_skills:
-                self.learning_engine.record_task_error(
-                    task=task,
-                    error=e,
-                    step="EXECUTION",
-                    recovery_successful=False,
-                    recovery_method=None
-                )
-            
-            # Re-raise for now (could handle differently)
-            raise
-        
-        finally:
-            self.tasks_executed += 1
-        
-        # Check if learning was triggered
-        initial_knowledge_count = self._get_total_knowledge_items()
-        
-        # Manually trigger learning check if needed
-        # (The learning engine auto-triggers at threshold, but we can force it)
-        
-        final_knowledge_count = self._get_total_knowledge_items()
-        if final_knowledge_count > initial_knowledge_count:
-            learned_something = True
-            self.learning_cycles_triggered += 1
-            logger.info(f"🎓 Learning triggered! Added {final_knowledge_count - initial_knowledge_count} knowledge items")
-        
-        # Create result
-        duration = 0.0
-        if result.end_time and result.start_time:
-            duration = (result.end_time - result.start_time).total_seconds()
-        
-        forge_result = ForgeResult(
-            task_id=result.id,
-            success=result.status == ExecutionStatus.COMPLETED,
-            outputs=result.outputs,
-            errors=result.errors,
-            duration=duration,
-            skills_used=[s.name for s in result.selected_skills],
-            learned_something=learned_something
+            return ForgeResult(
+                task_id=task_id,
+                skill_name="none",
+                success=False,
+                output=None,
+                errors=["No suitable skill found"],
+                warnings=[],
+                rules_applied=[],
+                execution_time_ms=0,
+            )
+
+        # Create execution context
+        context = ExecutionContext(
+            task_description=task_description,
+            task_id=task_id,
         )
-        
-        return forge_result
-    
-    def run_learning_cycle(self) -> Dict[str, int]:
+
+        # Apply overrides
+        if context_overrides:
+            for key, value in context_overrides.items():
+                if hasattr(context, key):
+                    setattr(context, key, value)
+
+        # Execute skill (this applies knowledge automatically)
+        result = skill.execute(context)
+
+        # Record outcome for learning
+        if result.success:
+            self.tasks_succeeded += 1
+            self.learning_engine.record_success(
+                skill_name=skill.name,
+                task_description=task_description,
+                context_snapshot=result.context_snapshot,
+                rules_applied=result.rules_applied,
+                execution_time_ms=result.execution_time_ms,
+            )
+        else:
+            self.tasks_failed += 1
+            for error in result.errors:
+                # Determine error type from message
+                error_type = self._classify_error(error)
+                self.learning_engine.record_error(
+                    skill_name=skill.name,
+                    task_description=task_description,
+                    error_type=error_type,
+                    error_message=error,
+                    context_snapshot=result.context_snapshot,
+                    rules_applied=result.rules_applied,
+                )
+
+        return ForgeResult(
+            task_id=task_id,
+            skill_name=skill.name,
+            success=result.success,
+            output=result.output.content if result.output else None,
+            errors=result.errors,
+            warnings=result.warnings,
+            rules_applied=result.rules_applied,
+            execution_time_ms=result.execution_time_ms,
+        )
+
+    def _classify_error(self, error_message: str) -> str:
+        """Classify error message into error type"""
+        error_lower = error_message.lower()
+
+        if 'timezone' in error_lower:
+            return 'TimezoneError'
+        elif 'spam' in error_lower:
+            return 'SpamTriggerError'
+        elif 'attachment' in error_lower:
+            return 'AttachmentError'
+        elif 'conflict' in error_lower:
+            return 'ConflictError'
+        elif 'preference' in error_lower:
+            return 'PreferenceError'
+        elif 'query' in error_lower or 'vague' in error_lower:
+            return 'PoorQueryError'
+        elif 'credibility' in error_lower:
+            return 'LowCredibilityError'
+        else:
+            return 'GenericError'
+
+    def run_learning_cycle(self,
+                          min_frequency: int = 3,
+                          min_confidence: float = 0.5) -> LearningMetrics:
         """
-        Manually trigger a learning cycle
-        Useful for batch processing or scheduled learning
-        
+        Run a learning cycle to detect patterns and generate rules
+
         Returns:
-            Statistics about what was learned
+            LearningMetrics with cycle results
         """
-        logger.info("Running manual learning cycle...")
-        stats = self.learning_engine.run_learning_cycle()
-        if stats['skills_updated'] > 0:
-            self.learning_cycles_triggered += 1
-        return stats
-    
-    def get_stats(self) -> Dict[str, Any]:
-        """
-        Get statistics about SkillForge usage and learning
-        
-        Returns:
-            Dictionary with usage and learning stats
-        """
-        learning_stats = self.learning_engine.get_learning_stats()
-        
+        return self.learning_engine.run_learning_cycle(min_frequency, min_confidence)
+
+    def get_statistics(self) -> Dict[str, Any]:
+        """Get comprehensive statistics"""
+        learning_stats = self.learning_engine.get_statistics()
+        kb_stats = self.knowledge_base.get_statistics()
+
         return {
             'execution': {
                 'tasks_executed': self.tasks_executed,
@@ -226,139 +209,95 @@ class SkillForge:
                 'tasks_failed': self.tasks_failed,
                 'success_rate': self.tasks_succeeded / self.tasks_executed if self.tasks_executed > 0 else 0,
             },
-            'learning': {
-                'total_errors_recorded': learning_stats['total_errors'],
-                'total_successes_recorded': learning_stats['total_successes'],
-                'recovery_rate': learning_stats['recovery_rate'],
-                'skills_with_knowledge': learning_stats['skills_with_learned_knowledge'],
-                'total_knowledge_items': learning_stats['total_knowledge_items'],
-                'learning_cycles_triggered': self.learning_cycles_triggered,
-            },
+            'learning': learning_stats,
+            'knowledge': kb_stats,
             'skills': {
-                'available_skills': len(self.execution_engine.skill_scanner.skills),
+                'available': self.skill_registry.list_skills(),
+                'skill_stats': {
+                    name: {
+                        'executions': skill.executions,
+                        'success_rate': skill.success_rate,
+                    }
+                    for name, skill in self.skill_registry.skills.items()
+                }
             }
         }
-    
-    def print_stats(self):
-        """Print a formatted statistics report"""
-        stats = self.get_stats()
-        
+
+    def print_statistics(self):
+        """Print formatted statistics"""
+        stats = self.get_statistics()
+
         print("\n" + "=" * 70)
-        print("SKILLFORGE STATISTICS")
+        print("SKILLFORGE V2 STATISTICS")
         print("=" * 70)
-        
+
         print("\nExecution:")
         print(f"  Tasks executed: {stats['execution']['tasks_executed']}")
         print(f"  Success rate: {stats['execution']['success_rate']:.1%}")
         print(f"  Succeeded: {stats['execution']['tasks_succeeded']}")
         print(f"  Failed: {stats['execution']['tasks_failed']}")
-        
+
         print("\nLearning:")
-        print(f"  Errors recorded: {stats['learning']['total_errors_recorded']}")
-        print(f"  Successes recorded: {stats['learning']['total_successes_recorded']}")
-        print(f"  Recovery rate: {stats['learning']['recovery_rate']:.1%}")
-        print(f"  Learning cycles: {stats['learning']['learning_cycles_triggered']}")
-        print(f"  Skills learned: {stats['learning']['skills_with_knowledge']}")
-        print(f"  Knowledge items: {stats['learning']['total_knowledge_items']}")
-        
+        print(f"  Learning cycles: {stats['learning']['learning_cycles']}")
+        print(f"  Total rules: {stats['learning']['total_rules']}")
+        print(f"  Rule applications: {stats['learning']['rule_applications']}")
+        print(f"  Rule success rate: {stats['learning']['rule_success_rate']:.1%}")
+
         print("\nSkills:")
-        print(f"  Available skills: {stats['skills']['available_skills']}")
-        
+        for skill_name, skill_stats in stats['skills']['skill_stats'].items():
+            print(f"  {skill_name}: {skill_stats['executions']} executions, "
+                  f"{skill_stats['success_rate']:.1%} success")
+
+        print("\nRules by Skill:")
+        for skill_name, count in stats['knowledge']['rules_by_skill'].items():
+            print(f"  {skill_name}: {count} rules")
+
         print("=" * 70 + "\n")
-    
-    def get_skill_info(self, skill_name: str) -> Optional[Dict]:
-        """
-        Get information about a specific skill
-        
-        Args:
-            skill_name: Name of the skill
-        
-        Returns:
-            Dictionary with skill information or None if not found
-        """
-        skill = self.execution_engine.skill_scanner.skills.get(skill_name)
-        if not skill:
-            return None
-        
-        learned = self.learning_engine.repository.get_learned_knowledge(skill_name)
-        
-        return {
-            'name': skill.name,
-            'description': skill.description,
-            'category': skill.category,
-            'file_types': skill.file_types,
-            'triggers': skill.triggers,
-            'learned_knowledge_items': len(learned),
-            'learned_knowledge': [
-                {
-                    'type': k.knowledge_type,
-                    'title': k.title,
-                    'confidence': k.confidence,
-                    'frequency': k.frequency,
-                }
-                for k in learned
-            ]
-        }
-    
-    def list_skills(self) -> List[str]:
-        """Get list of all available skills"""
-        return sorted(self.execution_engine.skill_scanner.skills.keys())
-    
-    def _get_total_knowledge_items(self) -> int:
-        """Helper to count total learned knowledge items"""
-        return sum(
-            len(items) 
-            for items in self.learning_engine.repository.learned_knowledge.values()
-        )
 
+    def get_skill_rules(self, skill_name: str) -> List[str]:
+        """Get human-readable list of rules for a skill"""
+        rules = self.knowledge_base.get_rules(skill_name)
+        return [str(rule) for rule in rules]
 
-# Convenience functions for quick usage
-def execute(description: str, files: Optional[List[str]] = None) -> ForgeResult:
-    """
-    Quick execution without creating SkillForge instance
-    
-    Example:
-        from skillforge import execute
-        result = execute("Create a PowerPoint about AI")
-    """
-    forge = SkillForge()
-    return forge.execute(description, files)
+    def reset(self):
+        """Reset all statistics and learning data"""
+        self.tasks_executed = 0
+        self.tasks_succeeded = 0
+        self.tasks_failed = 0
+        self.learning_engine.clear_data()
+
+        # Re-initialize skill registry to reset skill stats
+        self.skill_registry = SkillRegistry(self.knowledge_base)
 
 
 def main():
-    """CLI interface for SkillForge"""
-    import argparse
-    
-    parser = argparse.ArgumentParser(description="SkillForge - Self-Improving Execution Engine")
-    parser.add_argument("description", help="Task description")
-    parser.add_argument("--files", nargs="*", help="Input files")
-    parser.add_argument("--priority", choices=['critical', 'high', 'normal', 'low'], 
-                       default='normal', help="Task priority")
-    parser.add_argument("--stats", action="store_true", help="Show statistics after execution")
-    parser.add_argument("--learn", action="store_true", help="Trigger learning cycle")
-    
-    args = parser.parse_args()
-    
+    """Demo of SkillForge"""
     forge = SkillForge()
-    
-    if args.learn:
-        print("Running learning cycle...")
-        stats = forge.run_learning_cycle()
-        print(f"Learned: {stats}")
-        return
-    
-    # Execute task
-    result = forge.execute(args.description, args.files, args.priority)
-    
-    print(f"\nResult: {result}")
-    
-    if result.outputs:
-        print(f"\nOutputs:")
-        for output in result.outputs:
-            print(f"  - {output}")
-    
-    if args.stats:
-        forge.print_stats()
+
+    print("SkillForge Demo")
+    print("-" * 40)
+
+    # Execute some tasks
+    tasks = [
+        "Write an email about the meeting at 2 PM",
+        "Schedule a meeting with the team",
+        "Search for Python documentation",
+    ]
+
+    for task in tasks:
+        result = forge.execute(task)
+        print(f"\nTask: {task}")
+        print(f"Result: {result}")
+        print(f"Rules applied: {result.rules_applied}")
+
+    # Run learning cycle
+    print("\n" + "-" * 40)
+    print("Running learning cycle...")
+    metrics = forge.run_learning_cycle()
+    print(f"Learning metrics: {metrics.to_dict()}")
+
+    # Print statistics
+    forge.print_statistics()
 
 
 if __name__ == "__main__":

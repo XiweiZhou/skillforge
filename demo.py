@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SkillForge v2 Complete Demonstration
+SkillForge Complete Demonstration
 Shows real closed-loop learning with proper validation
 """
 
@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 logging.basicConfig(level=logging.WARNING)
 
-from scenarios.scenario_v2_email import run_complete_scenario as run_email_scenario
+from scenarios.scenario_email import run_complete_scenario as run_email_scenario
 
 
 def print_header(title: str):
@@ -44,7 +44,7 @@ def run_demo(verbose: bool = True) -> dict:
     2. Proper ablation testing (with vs without learning)
     3. Statistically valid improvement measurement
     """
-    print_header("SKILLFORGE V2 - CLOSED-LOOP LEARNING DEMONSTRATION")
+    print_header("SKILLFORGE  - CLOSED-LOOP LEARNING DEMONSTRATION")
 
     print("\n")
     print("This demonstration shows REAL self-improving agents:")
@@ -142,16 +142,16 @@ def run_demo(verbose: bool = True) -> dict:
     print("=" * 70 + "\n")
 
     # Save results
-    results_file = Path("./data/learning/demo_v2_results.json")
+    results_file = Path("./data/learning/demo_results.json")
     results_file.write_text(json.dumps(all_results, indent=2, default=str))
     print(f"Complete results saved to: {results_file}\n")
 
     return all_results
 
 
-def compare_v1_vs_v2():
+def compare_v1_vs():
     """Show architectural comparison between v1 and v2"""
-    print_header("ARCHITECTURE COMPARISON: V1 vs V2")
+    print_header("ARCHITECTURE COMPARISON: V1 vs ")
 
     print("""
     V1 ARCHITECTURE (BROKEN):
@@ -171,7 +171,7 @@ def compare_v1_vs_v2():
                          (Knowledge never used)
 
 
-    V2 ARCHITECTURE (WORKING):
+     ARCHITECTURE (WORKING):
     ==========================
 
     Task → Skill Selected → [KNOWLEDGE APPLIED] → Execution → Outcome
@@ -189,7 +189,7 @@ def compare_v1_vs_v2():
     ==========================================
 
     V1: Knowledge stored → Never read → No improvement
-    V2: Knowledge stored → Applied → Errors prevented → Improvement measured
+    : Knowledge stored → Applied → Errors prevented → Improvement measured
     """)
 
 
@@ -197,7 +197,7 @@ def main():
     """Main entry point"""
     import argparse
 
-    parser = argparse.ArgumentParser(description="SkillForge v2 Demonstration")
+    parser = argparse.ArgumentParser(description="SkillForge Demonstration")
     parser.add_argument("--verbose", action="store_true", help="Show detailed progress")
     parser.add_argument("--compare", action="store_true", help="Show v1 vs v2 comparison")
     parser.add_argument("--quiet", action="store_true", help="Minimal output")
@@ -205,7 +205,7 @@ def main():
     args = parser.parse_args()
 
     if args.compare:
-        compare_v1_vs_v2()
+        compare_v1_vs()
         return
 
     verbose = not args.quiet
@@ -213,7 +213,7 @@ def main():
     # Run demonstration
     results = run_demo(verbose=verbose)
 
-    print("\nSkillForge v2 demonstration complete!")
+    print("\nSkillForge demonstration complete!")
     print("This proves that the system now has REAL self-improving capabilities.")
 
 

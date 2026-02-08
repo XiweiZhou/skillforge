@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Scenario v2: Email Assistant with Real Learning
+Scenario: Email Assistant with Real Learning
 Demonstrates closed-loop learning with proper validation
 NO predetermined error decay - improvement comes from actual learning
 """
@@ -15,13 +15,13 @@ import json
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from knowledge import KnowledgeBase, RuleGenerator
-from skills_v2 import ExecutionContext, ExecutionStatus
-from learning_v2 import LearningEngine, ErrorRecord
-from skillforge_v2 import SkillForgeV2
+from skills import ExecutionContext, ExecutionStatus
+from learning import LearningEngine, ErrorRecord
+from skillforge import SkillForge
 
 import logging
 logging.basicConfig(level=logging.WARNING)
-logger = logging.getLogger("ScenarioV2Email")
+logger = logging.getLogger("ScenarioEmail")
 
 
 class EmailTaskSimulator:
@@ -108,7 +108,7 @@ class EmailTaskSimulator:
         return random.random() < base_rate
 
 
-def run_training_phase(forge: SkillForgeV2, num_tasks: int = 50, verbose: bool = True) -> Dict:
+def run_training_phase(forge: SkillForge, num_tasks: int = 50, verbose: bool = True) -> Dict:
     """
     Training phase: Execute tasks and collect errors for learning
     """
@@ -163,7 +163,7 @@ def run_training_phase(forge: SkillForgeV2, num_tasks: int = 50, verbose: bool =
     return results
 
 
-def run_learning_phase(forge: SkillForgeV2, verbose: bool = True) -> Dict:
+def run_learning_phase(forge: SkillForge, verbose: bool = True) -> Dict:
     """
     Learning phase: Detect patterns and generate rules
     """
@@ -187,7 +187,7 @@ def run_learning_phase(forge: SkillForgeV2, verbose: bool = True) -> Dict:
     return metrics.to_dict()
 
 
-def run_evaluation_phase(forge: SkillForgeV2, num_tasks: int = 50,
+def run_evaluation_phase(forge: SkillForge, num_tasks: int = 50,
                         apply_rules: bool = True, verbose: bool = True) -> Dict:
     """
     Evaluation phase: Test with/without learned rules
@@ -263,11 +263,11 @@ def run_complete_scenario(num_training: int = 50,
     Run complete scenario with training, learning, and evaluation phases
     """
     # Initialize fresh system
-    forge = SkillForgeV2()
+    forge = SkillForge()
     forge.reset()
 
     print("\n" + "=" * 70)
-    print("SCENARIO V2: EMAIL ASSISTANT WITH CLOSED-LOOP LEARNING")
+    print("SCENARIO : EMAIL ASSISTANT WITH CLOSED-LOOP LEARNING")
     print("=" * 70)
     print("\nKey difference from v1:")
     print("  - Error rates are CONSTANT (no predetermined decay)")
@@ -283,7 +283,7 @@ def run_complete_scenario(num_training: int = 50,
 
     # Phase 3a: Evaluation WITHOUT learning (baseline)
     # Need fresh forge for baseline
-    baseline_forge = SkillForgeV2()
+    baseline_forge = SkillForge()
     baseline_results = run_evaluation_phase(baseline_forge, num_eval, apply_rules=False, verbose=verbose)
 
     # Phase 3b: Evaluation WITH learning
@@ -294,7 +294,7 @@ def run_complete_scenario(num_training: int = 50,
 
     # Final report
     print("\n" + "=" * 70)
-    print("SCENARIO V2 RESULTS")
+    print("SCENARIO  RESULTS")
     print("=" * 70)
 
     print(f"\nTraining Phase ({num_training} tasks):")
@@ -341,7 +341,7 @@ def run_complete_scenario(num_training: int = 50,
         'timestamp': datetime.now().isoformat(),
     }
 
-    results_file = Path("./data/learning/scenario_v2_email_results.json")
+    results_file = Path("./data/learning/scenario_email_results.json")
     results_file.parent.mkdir(parents=True, exist_ok=True)
     results_file.write_text(json.dumps(all_results, indent=2))
     print(f"Results saved to {results_file}")

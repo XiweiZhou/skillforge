@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SkillForge Learning Engine v2
+SkillForge Learning Engine
 Pattern detection that generates actionable rules with proper validation
 """
 
@@ -15,7 +15,7 @@ import random
 
 from knowledge import KnowledgeBase, Rule, RuleGenerator, RuleType
 
-logger = logging.getLogger("LearningV2")
+logger = logging.getLogger("Learning")
 
 
 @dataclass
@@ -99,7 +99,7 @@ class ErrorRepository:
     def __init__(self, data_dir: Path):
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.errors_file = self.data_dir / "errors_v2.jsonl"
+        self.errors_file = self.data_dir / "errors.jsonl"
         self.errors: List[ErrorRecord] = []
         self._load()
 
@@ -143,7 +143,7 @@ class SuccessRepository:
     def __init__(self, data_dir: Path):
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.successes_file = self.data_dir / "successes_v2.jsonl"
+        self.successes_file = self.data_dir / "successes.jsonl"
         self.successes: List[SuccessRecord] = []
         self._load()
 

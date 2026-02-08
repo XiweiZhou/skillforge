@@ -20,6 +20,30 @@ Manages calendar operations and scheduling. Learns optimal meeting times, timezo
 
 ## Learned Knowledge
 <!-- This section auto-updated by LearningEngine -->
+### Conflict (confidence: 0.47, frequency: 9)
+Pattern detected: ConflictError. Example: Double booking detected
+
+### Conflict (confidence: 0.47, frequency: 9)
+Pattern detected: ConflictError. Example: Double booking detected
+
+### Conflict (confidence: 0.47, frequency: 9)
+Pattern detected: ConflictError. Example: Double booking detected
+
+### Conflict (confidence: 0.47, frequency: 9)
+Pattern detected: ConflictError. Example: Double booking detected
+
+### Conflict (confidence: 0.47, frequency: 9)
+Pattern detected: ConflictError. Example: Double booking detected
+
+### Conflict (confidence: 0.50, frequency: 7)
+Pattern detected: ConflictError. Example: Double booking detected
+
+### Conflict (confidence: 0.56, frequency: 5)
+Pattern detected: ConflictError. Example: Double booking detected
+
+### Conflict (confidence: 0.50, frequency: 4)
+Pattern detected: ConflictError. Example: Double booking detected
+
 ### Preference (confidence: 0.50, frequency: 5)
 Pattern detected: PreferenceError. Example: Ignored participant preferences
 

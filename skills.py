@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SkillForge Skills v2
+SkillForge Skills
 Real skill implementations with knowledge-aware execution
 """
 

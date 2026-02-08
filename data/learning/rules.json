@@ -29,12 +29,43 @@
         }
       ],
       "source_error_type": "TimezoneError",
-      "confidence": 0.5714285714285714,
+      "confidence": 0.4117647058823529,
       "times_applied": 0,
       "times_successful": 0,
-      "created_at": "2026-02-07T23:12:54.845000",
+      "created_at": "2026-02-07T23:32:14.898883",
       "last_applied": null,
       "description": "Add timezone when time is mentioned without one"
+    },
+    {
+      "id": "rule_spamtriggererror_2",
+      "name": "Prevent SpamTrigger",
+      "rule_type": "prevention",
+      "conditions": [
+        {
+          "field": "task.description",
+          "operator": "matches",
+          "value": "\\b(free|urgent|limited time|act now|exclusive)\\b"
+        }
+      ],
+      "actions": [
+        {
+          "action_type": "flag",
+          "target": "_flags",
+          "value": "potential_spam"
+        },
+        {
+          "action_type": "append",
+          "target": "context.warnings",
+          "value": "Contains spam trigger words"
+        }
+      ],
+      "source_error_type": "SpamTriggerError",
+      "confidence": 0.35294117647058826,
+      "times_applied": 0,
+      "times_successful": 0,
+      "created_at": "2026-02-07T23:32:14.898899",
+      "last_applied": null,
+      "description": "Flag content with spam trigger words for review"
     }
   ]
 }
