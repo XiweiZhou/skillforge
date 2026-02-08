@@ -1,0 +1,29 @@
+meeting_request:
+  match: [meeting, schedule]
+  subject: "Meeting Request"
+  body: "I would like to schedule a meeting to discuss..."
+
+follow_up:
+  match: [follow, recap]
+  subject: "Follow-up on our previous discussion"
+  body: "Following up on our recent conversation..."
+
+introduction:
+  match: [introduce, introduction]
+  subject: "Introduction"
+  body: "I wanted to take a moment to introduce..."
+
+decline:
+  match: [decline, cancel]
+  subject: "Re: Meeting Request"
+  body: "Thank you for the invitation. Unfortunately..."
+
+thank_you:
+  match: [thank]
+  subject: "Thank You"
+  body: "I wanted to express my appreciation for..."
+
+general:
+  match: []
+  subject: "Regarding your request"
+  body: "I am writing to address..."

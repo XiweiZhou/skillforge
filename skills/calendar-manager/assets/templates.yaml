@@ -1,0 +1,19 @@
+team_sync:
+  match: [sync]
+  title: "Team Sync"
+  duration: 60
+
+retrospective:
+  match: [retrospective]
+  title: "Retrospective"
+  duration: 60
+
+one_on_one:
+  match: ["1-on-1", one-on-one]
+  title: "1:1 Meeting"
+  duration: 30
+
+meeting:
+  match: []
+  title: "Meeting"
+  duration: 60

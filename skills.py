@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
 """
-SkillForge Skills
-Real skill implementations with knowledge-aware execution
+SkillForge Skills - Declarative skill system with knowledge-aware execution
+
+Skills are loaded from SKILL.md files (AgentSkills.io specification compliant).
+No Python subclassing needed to add new skills.
 """
 
+import importlib.util
 import logging
-import re
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, Dict, List, Any, Tuple
-from dataclasses import dataclass, field
+from typing import Optional, Dict, List, Any, Callable
 from abc import ABC, abstractmethod
 from enum import Enum
 
-from knowledge import KnowledgeBase, Rule, RuleType
+import yaml
+
+from knowledge import KnowledgeBase, RuleType
 
 logger = logging.getLogger("Skills")
 
@@ -26,45 +29,66 @@ class ExecutionStatus(Enum):
     REJECTED = "rejected"
 
 
-@dataclass
 class ExecutionContext:
-    """Context for skill execution including knowledge"""
-    task_description: str
-    task_id: str
-    user_files: List[str] = field(default_factory=list)
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    """
+    Context for skill execution including knowledge.
 
-    # Knowledge-related
-    has_timezone: bool = False
-    has_attachment: bool = False
-    has_conflict: bool = False
-    violates_preferences: bool = False
-    avg_credibility: float = 0.5
+    Dynamic properties replace hard-coded fields (has_timezone, has_attachment, etc.).
+    Backward-compatible: context.has_timezone works via __getattr__ routing to properties.
+    """
 
-    # Runtime state
-    warnings: List[str] = field(default_factory=list)
-    suggestions: List[str] = field(default_factory=list)
-    applied_rules: List[str] = field(default_factory=list)
-    flags: set = field(default_factory=set)
+    _KNOWN_FIELDS = {
+        'task_description', 'task_id', 'user_files', 'metadata',
+        'properties', 'warnings', 'suggestions', 'applied_rules', 'flags',
+    }
+
+    def __init__(self, task_description: str, task_id: str,
+                 user_files: Optional[List[str]] = None,
+                 metadata: Optional[Dict[str, Any]] = None,
+                 **kwargs):
+        self.task_description = task_description
+        self.task_id = task_id
+        self.user_files = user_files or []
+        self.metadata = metadata or {}
+        self.properties: Dict[str, Any] = {}
+        self.warnings: List[str] = []
+        self.suggestions: List[str] = []
+        self.applied_rules: List[str] = []
+        self.flags: set = set()
+
+        # Extra kwargs go into properties (backward compat for has_timezone=False, etc.)
+        for key, value in kwargs.items():
+            self.properties[key] = value
+
+    def __getattr__(self, name: str) -> Any:
+        """Fall back to properties dict for unknown attributes"""
+        if name.startswith('_'):
+            raise AttributeError(name)
+        properties = self.__dict__.get('properties', {})
+        if name in properties:
+            return properties[name]
+        return None
+
+    def __setattr__(self, name: str, value: Any):
+        """Route unknown attribute writes to properties after init"""
+        if name in self._KNOWN_FIELDS or 'properties' not in self.__dict__:
+            super().__setattr__(name, value)
+        else:
+            self.properties[name] = value
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for rule matching"""
+        context_dict = dict(self.properties)
+        context_dict['warnings'] = self.warnings.copy()
+        context_dict['suggestions'] = self.suggestions.copy()
         return {
             'task': {
                 'description': self.task_description,
                 'id': self.task_id,
             },
-            'context': {
-                'has_timezone': self.has_timezone,
-                'has_attachment': self.has_attachment,
-                'has_conflict': self.has_conflict,
-                'violates_preferences': self.violates_preferences,
-                'avg_credibility': self.avg_credibility,
-                'warnings': self.warnings.copy(),
-                'suggestions': self.suggestions.copy(),
-            },
+            'context': context_dict,
             '_applied_rules': self.applied_rules.copy(),
-            '_flags': list(self.flags),  # Convert set to list for JSON
+            '_flags': list(self.flags),
         }
 
     def update_from_dict(self, data: Dict[str, Any]):
@@ -80,30 +104,35 @@ class ExecutionContext:
             if 'suggestions' in ctx:
                 self.suggestions = ctx['suggestions']
             if 'timezone' in ctx:
-                self.has_timezone = True
+                self.properties['has_timezone'] = True
                 self.metadata['timezone'] = ctx['timezone']
 
 
-@dataclass
 class SkillOutput:
     """Output from skill execution"""
-    content: Any  # The actual output (email text, calendar event, etc.)
-    output_type: str  # "email", "calendar_event", "search_results", etc.
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    def __init__(self, content: Any, output_type: str,
+                 metadata: Optional[Dict[str, Any]] = None):
+        self.content = content
+        self.output_type = output_type
+        self.metadata = metadata or {}
 
 
-@dataclass
 class ExecutionResult:
     """Result of skill execution"""
-    status: ExecutionStatus
-    output: Optional[SkillOutput] = None
-    errors: List[str] = field(default_factory=list)
-    warnings: List[str] = field(default_factory=list)
-    rules_applied: List[str] = field(default_factory=list)
-    execution_time_ms: float = 0.0
-
-    # For learning feedback
-    context_snapshot: Optional[Dict] = None
+    def __init__(self, status: ExecutionStatus,
+                 output: Optional[SkillOutput] = None,
+                 errors: Optional[List[str]] = None,
+                 warnings: Optional[List[str]] = None,
+                 rules_applied: Optional[List[str]] = None,
+                 execution_time_ms: float = 0.0,
+                 context_snapshot: Optional[Dict] = None):
+        self.status = status
+        self.output = output
+        self.errors = errors or []
+        self.warnings = warnings or []
+        self.rules_applied = rules_applied or []
+        self.execution_time_ms = execution_time_ms
+        self.context_snapshot = context_snapshot
 
     @property
     def success(self) -> bool:
@@ -127,13 +156,9 @@ class BaseSkill(ABC):
 
     def execute(self, context: ExecutionContext) -> ExecutionResult:
         """
-        Execute the skill with knowledge application
+        Execute the skill with knowledge application.
 
-        This is the main entry point that:
-        1. Applies pre-execution rules
-        2. Runs the actual skill logic
-        3. Applies validation rules
-        4. Records outcomes for learning
+        Pipeline: prevention rules -> execute -> validation rules -> record outcomes
         """
         start_time = datetime.now()
         self.executions += 1
@@ -186,26 +211,17 @@ class BaseSkill(ABC):
                         rule_types: List[RuleType]) -> ExecutionContext:
         """Apply knowledge rules to context"""
         context_dict = context.to_dict()
-
-        # Apply rules
         modified = self.knowledge_base.apply_rules(
             self.name, context_dict, rule_types
         )
-
-        # Update context from modified dict
         context.update_from_dict(modified)
-
         return context
 
     def _validate_output(self, context: ExecutionContext,
                         result: ExecutionResult) -> ExecutionResult:
         """Apply validation rules to output"""
-        # Apply validation rules
         context = self._apply_knowledge(context, [RuleType.VALIDATION])
-
-        # Check for validation warnings
         result.warnings.extend(context.warnings)
-
         return result
 
     @abstractmethod
@@ -214,25 +230,66 @@ class BaseSkill(ABC):
         pass
 
 
-class EmailWriterSkill(BaseSkill):
-    """Email writing skill with knowledge-aware execution"""
+# ---------------------------------------------------------------------------
+# Declarative skill: driven by SKILL.md metadata + optional assets/templates
+# ---------------------------------------------------------------------------
 
-    def __init__(self, knowledge_base: KnowledgeBase):
-        super().__init__("email_writer", knowledge_base)
+class DeclarativeSkill(BaseSkill):
+    """
+    A skill whose behavior is driven by SKILL.md metadata and optional assets.
+
+    No Python subclassing needed. Users create a directory with SKILL.md and
+    the engine handles execution, learning, and knowledge application.
+    """
+
+    def __init__(self, name: str, knowledge_base: KnowledgeBase,
+                 skill_metadata: Dict[str, Any], skill_dir: Path):
+        super().__init__(name, knowledge_base)
+        self.skill_metadata = skill_metadata
+        self.skill_dir = skill_dir
+        self.description = skill_metadata.get('description', '')
+        self.output_type = skill_metadata.get('metadata', {}).get('output_type', 'generic')
+        self.triggers = skill_metadata.get('metadata', {}).get('triggers', [])
+        self.context_fields = skill_metadata.get('metadata', {}).get('context_fields', {})
+        self._templates = self._load_templates()
+        self._handler = self._load_handler()
+
+    def _load_templates(self) -> Dict[str, Any]:
+        """Load output templates from assets/templates.yaml if present"""
+        templates_path = self.skill_dir / "assets" / "templates.yaml"
+        if templates_path.exists():
+            return yaml.safe_load(templates_path.read_text()) or {}
+        return {}
+
+    def _load_handler(self) -> Optional[Callable]:
+        """Load optional custom Python handler from scripts/handler.py"""
+        handler_path = self.skill_dir / "scripts" / "handler.py"
+        if handler_path.exists():
+            spec = importlib.util.spec_from_file_location(
+                f"skill_handler_{self.name}", handler_path
+            )
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            if hasattr(module, 'execute'):
+                return module.execute
+        return None
 
     def _execute_impl(self, context: ExecutionContext) -> ExecutionResult:
-        """Generate an email based on task description"""
+        """Execute using custom handler or declarative templates"""
+        # Custom handler takes priority
+        if self._handler:
+            return self._handler(context, self.skill_metadata)
+
         task = context.task_description.lower()
 
-        # Parse intent
+        # Parse intent from templates
         intent = self._parse_intent(task)
 
-        # Generate email content
-        email_content = self._generate_email(task, intent, context)
+        # Generate output from template
+        output_content = self._generate_output(task, intent, context)
 
-        # Validate email
-        validation_errors = self._validate_email(email_content, context)
-
+        # Run flag-based validation
+        validation_errors = self._validate(context)
         if validation_errors:
             return ExecutionResult(
                 status=ExecutionStatus.FAILURE,
@@ -241,13 +298,9 @@ class EmailWriterSkill(BaseSkill):
             )
 
         output = SkillOutput(
-            content=email_content,
-            output_type="email",
-            metadata={
-                'intent': intent,
-                'has_timezone': context.has_timezone,
-                'warnings': context.warnings,
-            }
+            content=output_content,
+            output_type=self.output_type,
+            metadata={'intent': intent, 'warnings': context.warnings},
         )
 
         return ExecutionResult(
@@ -257,228 +310,161 @@ class EmailWriterSkill(BaseSkill):
         )
 
     def _parse_intent(self, task: str) -> str:
-        """Determine email intent from task description"""
-        if 'meeting' in task or 'schedule' in task:
-            return 'meeting_request'
-        elif 'follow' in task or 'recap' in task:
-            return 'follow_up'
-        elif 'introduce' in task or 'introduction' in task:
-            return 'introduction'
-        elif 'decline' in task or 'cancel' in task:
-            return 'decline'
-        elif 'thank' in task:
-            return 'thank_you'
+        """Parse intent by matching task keywords against template match lists"""
+        for intent_name, template in self._templates.items():
+            match_keywords = template.get('match', [])
+            if any(kw in task for kw in match_keywords):
+                return intent_name
+
+        # Return the last template key as default (convention: last = default)
+        if self._templates:
+            return list(self._templates.keys())[-1]
+        return 'general'
+
+    def _generate_output(self, task: str, intent: str,
+                        context: ExecutionContext) -> Dict[str, Any]:
+        """Generate output from template or generic fallback"""
+        if intent in self._templates:
+            template = self._templates[intent]
+            result = {k: v for k, v in template.items() if k != 'match'}
         else:
-            return 'general'
+            result = {'content': f'Output for: {task}'}
 
-    def _generate_email(self, task: str, intent: str,
-                       context: ExecutionContext) -> Dict[str, str]:
-        """Generate email content"""
-        # Base templates by intent
-        templates = {
-            'meeting_request': {
-                'subject': 'Meeting Request',
-                'body': 'I would like to schedule a meeting to discuss...'
-            },
-            'follow_up': {
-                'subject': 'Follow-up on our previous discussion',
-                'body': 'Following up on our recent conversation...'
-            },
-            'introduction': {
-                'subject': 'Introduction',
-                'body': 'I wanted to take a moment to introduce...'
-            },
-            'decline': {
-                'subject': 'Re: Meeting Request',
-                'body': 'Thank you for the invitation. Unfortunately...'
-            },
-            'thank_you': {
-                'subject': 'Thank You',
-                'body': 'I wanted to express my appreciation for...'
-            },
-            'general': {
-                'subject': 'Regarding your request',
-                'body': 'I am writing to address...'
-            }
-        }
+        result['generated_at'] = datetime.now().isoformat()
 
-        template = templates.get(intent, templates['general'])
+        # Apply timezone context if available
+        if context.properties.get('has_timezone') and 'timezone' in context.metadata:
+            if 'body' in result:
+                result['body'] += f"\n\n(All times in {context.metadata['timezone']})"
 
-        email = {
-            'subject': template['subject'],
-            'body': template['body'],
-            'generated_at': datetime.now().isoformat(),
-        }
-
-        # Apply context modifications
-        if context.has_timezone and 'timezone' in context.metadata:
-            # Modify body to include timezone
-            email['body'] += f"\n\n(All times in {context.metadata['timezone']})"
-
-        # Add warnings as notes
         if context.warnings:
-            email['notes'] = context.warnings
+            result['notes'] = context.warnings
 
-        return email
+        return result
 
-    def _validate_email(self, email: Dict, context: ExecutionContext) -> List[str]:
-        """Validate generated email"""
+    def _validate(self, context: ExecutionContext) -> List[str]:
+        """Run flag-based validation checks"""
         errors = []
 
-        # Check for spam triggers if flagged
-        if 'potential_spam' in context.flags:
-            # In real implementation, would check and possibly rewrite
-            # For now, pass with warning
-            pass
-
-        # Check for attachment mention if flagged
+        # Attachment validation: flagged but not provided
         if 'attachment_mentioned' in context.flags:
-            if not context.has_attachment:
+            if not context.properties.get('has_attachment'):
                 errors.append("Email mentions attachment but none provided")
+
+        # Scheduling conflict validation
+        if 'scheduling_conflict' in context.flags:
+            if context.properties.get('has_conflict'):
+                errors.append("Scheduling conflict detected")
 
         return errors
 
+    def get_default_context_values(self) -> Dict[str, Any]:
+        """Get default property values from SKILL.md context_fields"""
+        defaults = {}
+        for field_name, field_def in self.context_fields.items():
+            if isinstance(field_def, dict) and 'default' in field_def:
+                defaults[field_name] = field_def['default']
+        return defaults
 
-class CalendarManagerSkill(BaseSkill):
-    """Calendar management skill with knowledge-aware execution"""
 
-    def __init__(self, knowledge_base: KnowledgeBase):
-        super().__init__("calendar_manager", knowledge_base)
+# ---------------------------------------------------------------------------
+# Skill loading from disk
+# ---------------------------------------------------------------------------
 
-    def _execute_impl(self, context: ExecutionContext) -> ExecutionResult:
-        """Schedule a calendar event"""
-        task = context.task_description.lower()
+class SkillLoader:
+    """Loads skills from directories containing SKILL.md files"""
 
-        # Parse meeting details
-        meeting_info = self._parse_meeting_details(task, context)
+    @classmethod
+    def load_all(cls, knowledge_base: KnowledgeBase,
+                 skills_dir: Path) -> Dict[str, BaseSkill]:
+        """Scan skills directory and load each skill from its SKILL.md"""
+        skills = {}
 
-        # Check for conflicts (using context)
-        if context.has_conflict and 'scheduling_conflict' in context.flags:
-            return ExecutionResult(
-                status=ExecutionStatus.FAILURE,
-                errors=["Scheduling conflict detected"],
-                warnings=context.warnings,
-            )
+        if not skills_dir.exists():
+            logger.warning(f"Skills directory not found: {skills_dir}")
+            return skills
 
-        # Check preferences
-        if context.violates_preferences and 'preference_violation' in context.flags:
-            # Add warning but continue
-            context.warnings.append("This time may not align with participant preferences")
+        for skill_dir in sorted(skills_dir.iterdir()):
+            if not skill_dir.is_dir():
+                continue
+            skill_md = skill_dir / "SKILL.md"
+            if not skill_md.exists():
+                continue
 
-        # Create event
-        event = {
-            'title': meeting_info.get('title', 'Meeting'),
-            'duration': meeting_info.get('duration', 60),
-            'participants': meeting_info.get('participants', []),
-            'created_at': datetime.now().isoformat(),
-        }
+            try:
+                skill = cls._load_skill(skill_dir, knowledge_base)
+                if skill:
+                    skills[skill.name] = skill
+                    logger.info(f"Loaded skill: {skill.name} from {skill_dir.name}/")
+            except Exception as e:
+                logger.error(f"Failed to load skill from {skill_dir}: {e}")
 
-        output = SkillOutput(
-            content=event,
-            output_type="calendar_event",
-            metadata={'warnings': context.warnings}
+        return skills
+
+    @classmethod
+    def _load_skill(cls, skill_dir: Path,
+                    knowledge_base: KnowledgeBase) -> Optional[BaseSkill]:
+        """Load a single skill from its directory"""
+        skill_md = skill_dir / "SKILL.md"
+        frontmatter = cls._parse_frontmatter(skill_md.read_text())
+
+        spec_name = frontmatter.get('name')
+        if not spec_name:
+            logger.error(f"SKILL.md missing 'name' in {skill_dir}")
+            return None
+        if not frontmatter.get('description'):
+            logger.error(f"SKILL.md missing 'description' in {skill_dir}")
+            return None
+
+        # Internal name: convert hyphenated spec name to underscored
+        # (preserves backward compat with rules.json, error repos, etc.)
+        internal_name = spec_name.replace('-', '_')
+
+        return DeclarativeSkill(
+            name=internal_name,
+            knowledge_base=knowledge_base,
+            skill_metadata=frontmatter,
+            skill_dir=skill_dir,
         )
 
-        return ExecutionResult(
-            status=ExecutionStatus.SUCCESS,
-            output=output,
-            warnings=context.warnings,
-        )
-
-    def _parse_meeting_details(self, task: str,
-                               context: ExecutionContext) -> Dict[str, Any]:
-        """Parse meeting details from task"""
-        details = {}
-
-        # Extract duration
-        duration_match = re.search(r'(\d+)\s*(hour|hr|minute|min)', task)
-        if duration_match:
-            amount = int(duration_match.group(1))
-            unit = duration_match.group(2)
-            if 'hour' in unit or 'hr' in unit:
-                details['duration'] = amount * 60
-            else:
-                details['duration'] = amount
-        else:
-            details['duration'] = 60  # Default
-
-        # Extract title hints
-        if 'sync' in task:
-            details['title'] = 'Team Sync'
-        elif 'retrospective' in task:
-            details['title'] = 'Retrospective'
-        elif '1-on-1' in task or 'one-on-one' in task:
-            details['title'] = '1:1 Meeting'
-        else:
-            details['title'] = 'Meeting'
-
-        return details
+    @staticmethod
+    def _parse_frontmatter(text: str) -> Dict[str, Any]:
+        """Parse YAML frontmatter from markdown file"""
+        if not text.startswith('---'):
+            return {}
+        parts = text.split('---', 2)
+        if len(parts) < 3:
+            return {}
+        return yaml.safe_load(parts[1]) or {}
 
 
-class WebSearcherSkill(BaseSkill):
-    """Web search skill with knowledge-aware execution"""
-
-    def __init__(self, knowledge_base: KnowledgeBase):
-        super().__init__("web_searcher", knowledge_base)
-
-    def _execute_impl(self, context: ExecutionContext) -> ExecutionResult:
-        """Execute a web search"""
-        query = context.task_description
-
-        # Check for vague query warning
-        if 'vague_query' in context.flags:
-            context.suggestions.append("Consider adding more specific terms to your query")
-
-        # Simulate search (in real implementation, would call API)
-        results = self._perform_search(query)
-
-        # Check credibility
-        if context.avg_credibility < 0.5 and 'low_credibility_sources' in context.flags:
-            context.warnings.append("Search results may contain low-credibility sources")
-
-        output = SkillOutput(
-            content=results,
-            output_type="search_results",
-            metadata={
-                'query': query,
-                'num_results': len(results),
-                'avg_credibility': context.avg_credibility,
-            }
-        )
-
-        return ExecutionResult(
-            status=ExecutionStatus.SUCCESS,
-            output=output,
-            warnings=context.warnings,
-        )
-
-    def _perform_search(self, query: str) -> List[Dict]:
-        """Perform search (simulated)"""
-        # In real implementation, would call actual search API
-        return [
-            {'title': f'Result for: {query}', 'url': 'https://example.com', 'snippet': '...'}
-        ]
-
+# ---------------------------------------------------------------------------
+# Skill registry
+# ---------------------------------------------------------------------------
 
 class SkillRegistry:
-    """Registry of available skills"""
+    """Registry of available skills - loads from skill directories"""
 
-    def __init__(self, knowledge_base: KnowledgeBase):
+    def __init__(self, knowledge_base: KnowledgeBase,
+                 skills_dir: Optional[Path] = None):
         self.knowledge_base = knowledge_base
         self.skills: Dict[str, BaseSkill] = {}
+        self._trigger_index: Dict[str, str] = {}
 
-        # Register default skills
-        self._register_default_skills()
-
-    def _register_default_skills(self):
-        """Register built-in skills"""
-        self.register(EmailWriterSkill(self.knowledge_base))
-        self.register(CalendarManagerSkill(self.knowledge_base))
-        self.register(WebSearcherSkill(self.knowledge_base))
+        # Load skills from disk
+        skills_dir = skills_dir or Path(__file__).parent / "skills"
+        loaded = SkillLoader.load_all(knowledge_base, skills_dir)
+        for skill in loaded.values():
+            self.register(skill)
 
     def register(self, skill: BaseSkill):
-        """Register a skill"""
+        """Register a skill and index its triggers"""
         self.skills[skill.name] = skill
+
+        if isinstance(skill, DeclarativeSkill):
+            for trigger in skill.triggers:
+                self._trigger_index[trigger.lower()] = skill.name
+
         logger.info(f"Registered skill: {skill.name}")
 
     def get(self, name: str) -> Optional[BaseSkill]:
@@ -486,18 +472,26 @@ class SkillRegistry:
         return self.skills.get(name)
 
     def get_for_task(self, task: str) -> Optional[BaseSkill]:
-        """Get the best skill for a task"""
+        """Get the best skill for a task.
+
+        Scores each skill by (number of trigger matches, earliest position).
+        More matches wins; ties broken by which trigger appears first in the task.
+        """
         task_lower = task.lower()
-
-        # Simple keyword matching (in real implementation, would use NLP)
-        if any(kw in task_lower for kw in ['email', 'write', 'compose', 'draft']):
-            return self.skills.get('email_writer')
-        elif any(kw in task_lower for kw in ['schedule', 'meeting', 'calendar', 'book']):
-            return self.skills.get('calendar_manager')
-        elif any(kw in task_lower for kw in ['search', 'find', 'research', 'look up']):
-            return self.skills.get('web_searcher')
-
-        return None
+        # skill_name -> (match_count, earliest_position)
+        scores: Dict[str, List[int]] = {}
+        for trigger, skill_name in self._trigger_index.items():
+            pos = task_lower.find(trigger)
+            if pos >= 0:
+                if skill_name not in scores:
+                    scores[skill_name] = [0, pos]
+                scores[skill_name][0] += 1
+                scores[skill_name][1] = min(scores[skill_name][1], pos)
+        if not scores:
+            return None
+        # Sort by: most matches DESC, earliest position ASC
+        best = min(scores, key=lambda s: (-scores[s][0], scores[s][1]))
+        return self.skills.get(best)
 
     def list_skills(self) -> List[str]:
         """List all registered skills"""
@@ -507,7 +501,6 @@ class SkillRegistry:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
-    # Test the new skill system
     from knowledge import KnowledgeBase, RuleGenerator
 
     kb = KnowledgeBase(Path("./data/learning"))
@@ -518,10 +511,11 @@ if __name__ == "__main__":
     if rule:
         kb.add_rule("email_writer", rule)
 
-    # Create skill registry
+    # Create skill registry (loads from skills/ directory)
     registry = SkillRegistry(kb)
+    print(f"Loaded skills: {registry.list_skills()}")
 
-    # Create execution context
+    # Create execution context with dynamic properties
     context = ExecutionContext(
         task_description="Write an email about meeting at 2 PM tomorrow",
         task_id="test_001",

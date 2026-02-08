@@ -139,6 +139,8 @@ class Action:
 
         elif self.action_type == "flag":
             flags = result.get('_flags', set())
+            if isinstance(flags, list):
+                flags = set(flags)
             flags.add(self.value)
             result['_flags'] = flags
 
@@ -367,7 +369,8 @@ class KnowledgeBase:
         Returns modified context with _applied_rules metadata
         """
         result = context.copy()
-        result['_applied_rules'] = []
+        if '_applied_rules' not in result:
+            result['_applied_rules'] = []
 
         applicable = self.get_applicable_rules(skill_name, result)
 
@@ -412,12 +415,16 @@ class KnowledgeBase:
 
 class RuleGenerator:
     """
-    Generates actionable rules from error patterns
-    This is the core "learning" component
+    Generates actionable rules from error patterns.
+
+    PATTERN_LIBRARY is a generic collection of common error patterns shared
+    across all skills. Skills don't declare their own patterns -- the engine
+    matches patterns to skills based on runtime errors. New patterns added
+    here benefit every skill automatically.
     """
 
-    # Known error patterns and their remediation rules
-    ERROR_PATTERNS = {
+    # Generic pattern library -- backbone intelligence, not per-skill config
+    PATTERN_LIBRARY = {
         'TimezoneError': {
             'detection': [
                 Condition('task.description', ConditionOperator.MATCHES, r'\d{1,2}\s*(am|pm|AM|PM)'),
@@ -516,11 +523,11 @@ class RuleGenerator:
         Returns:
             Rule object or None if no rule can be generated
         """
-        if error_type not in self.ERROR_PATTERNS:
+        if error_type not in self.PATTERN_LIBRARY:
             logger.warning(f"No pattern template for error type: {error_type}")
             return None
 
-        pattern = self.ERROR_PATTERNS[error_type]
+        pattern = self.PATTERN_LIBRARY[error_type]
 
         rule = Rule(
             id=self._generate_rule_id(error_type),

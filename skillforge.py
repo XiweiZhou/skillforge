@@ -1,19 +1,16 @@
 #!/usr/bin/env python3
 """
 SkillForge - Self-Improving Agents with Closed-Loop Learning
-Unified interface with real knowledge application
+Unified interface with declarative skill loading and knowledge application
 """
 
 import logging
 from pathlib import Path
-from datetime import datetime
 from typing import Optional, Dict, List, Any
 from dataclasses import dataclass
 
-from knowledge import KnowledgeBase
-from skills import (
-    SkillRegistry, BaseSkill, ExecutionContext, ExecutionResult, ExecutionStatus
-)
+from knowledge import KnowledgeBase, RuleGenerator
+from skills import SkillRegistry, ExecutionContext
 from learning import LearningEngine, LearningMetrics
 
 logging.basicConfig(
@@ -42,34 +39,37 @@ class ForgeResult:
 
 class SkillForge:
     """
-    SkillForge v2 - Unified interface for self-improving task execution
+    Unified interface for self-improving task execution.
 
-    Key differences from v1:
-    - Knowledge rules actually influence execution
-    - Skills produce real outputs
-    - Closed-loop learning feedback
-    - Proper validation support
+    Skills are loaded declaratively from SKILL.md files (AgentSkills.io spec).
+    Knowledge rules influence execution via closed-loop learning.
     """
 
     def __init__(self,
-                 data_dir: Optional[Path] = None):
+                 data_dir: Optional[Path] = None,
+                 skills_dir: Optional[Path] = None):
         """
-        Initialize SkillForge v2
+        Initialize SkillForge.
 
         Args:
             data_dir: Directory for learning data (default: ./data/learning)
+            skills_dir: Directory containing skill definitions (default: ./skills)
         """
         self.data_dir = Path(data_dir or "./data/learning")
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.skills_dir = Path(skills_dir) if skills_dir else None
 
         # Initialize knowledge base
         self.knowledge_base = KnowledgeBase(self.data_dir)
 
-        # Initialize skill registry
-        self.skill_registry = SkillRegistry(self.knowledge_base)
+        # Initialize skill registry (loads from skills/ directory)
+        self.skill_registry = SkillRegistry(self.knowledge_base, self.skills_dir)
 
         # Initialize learning engine
         self.learning_engine = LearningEngine(self.knowledge_base, self.data_dir)
+
+        # Build error classification index from PATTERN_LIBRARY
+        self._error_keywords = self._build_error_classification()
 
         # Statistics
         self.tasks_executed = 0
@@ -121,11 +121,10 @@ class SkillForge:
             task_id=task_id,
         )
 
-        # Apply overrides
+        # Apply overrides (routes to context.properties for dynamic fields)
         if context_overrides:
             for key, value in context_overrides.items():
-                if hasattr(context, key):
-                    setattr(context, key, value)
+                setattr(context, key, value)
 
         # Execute skill (this applies knowledge automatically)
         result = skill.execute(context)
@@ -165,26 +164,27 @@ class SkillForge:
             execution_time_ms=result.execution_time_ms,
         )
 
-    def _classify_error(self, error_message: str) -> str:
-        """Classify error message into error type"""
-        error_lower = error_message.lower()
+    @staticmethod
+    def _build_error_classification() -> Dict[str, str]:
+        """Build keyword -> error_type index from the PATTERN_LIBRARY."""
+        keywords = {}
+        for error_type in RuleGenerator.PATTERN_LIBRARY:
+            # Derive keywords from error type name (e.g. TimezoneError -> timezone)
+            base = error_type.replace('Error', '').lower()
+            keywords[base] = error_type
+        # Add common aliases
+        keywords.setdefault('spam', 'SpamTriggerError')
+        keywords.setdefault('vague', 'PoorQueryError')
+        keywords.setdefault('query', 'PoorQueryError')
+        return keywords
 
-        if 'timezone' in error_lower:
-            return 'TimezoneError'
-        elif 'spam' in error_lower:
-            return 'SpamTriggerError'
-        elif 'attachment' in error_lower:
-            return 'AttachmentError'
-        elif 'conflict' in error_lower:
-            return 'ConflictError'
-        elif 'preference' in error_lower:
-            return 'PreferenceError'
-        elif 'query' in error_lower or 'vague' in error_lower:
-            return 'PoorQueryError'
-        elif 'credibility' in error_lower:
-            return 'LowCredibilityError'
-        else:
-            return 'GenericError'
+    def _classify_error(self, error_message: str) -> str:
+        """Classify error message using keywords derived from PATTERN_LIBRARY"""
+        error_lower = error_message.lower()
+        for keyword, error_type in self._error_keywords.items():
+            if keyword in error_lower:
+                return error_type
+        return 'GenericError'
 
     def run_learning_cycle(self,
                           min_frequency: int = 3,
@@ -228,7 +228,7 @@ class SkillForge:
         stats = self.get_statistics()
 
         print("\n" + "=" * 70)
-        print("SKILLFORGE V2 STATISTICS")
+        print("SKILLFORGE STATISTICS")
         print("=" * 70)
 
         print("\nExecution:")
@@ -267,7 +267,7 @@ class SkillForge:
         self.learning_engine.clear_data()
 
         # Re-initialize skill registry to reset skill stats
-        self.skill_registry = SkillRegistry(self.knowledge_base)
+        self.skill_registry = SkillRegistry(self.knowledge_base, self.skills_dir)
 
 
 def main():
