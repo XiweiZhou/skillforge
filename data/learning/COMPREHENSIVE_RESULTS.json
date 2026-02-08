@@ -1,0 +1,44 @@
+{
+  "timestamp": "2026-02-07T22:56:50.592300",
+  "summary": {
+    "total_tasks": 225,
+    "total_successes": 187,
+    "total_failures": 38,
+    "overall_success_rate": 0.8311111111111111,
+    "total_learning_cycles": 15,
+    "total_knowledge_items": 19
+  },
+  "scenarios": {
+    "email_assistant": {
+      "total_tasks": 100,
+      "successes": 92,
+      "failures": 8,
+      "by_cycle": [],
+      "learning_cycles": 5,
+      "knowledge_items_learned": 3,
+      "final_success_rate": 0.92
+    },
+    "calendar_coordinator": {
+      "total_tasks": 50,
+      "successes": 36,
+      "failures": 14,
+      "by_cycle": [],
+      "learning_cycles": 5,
+      "knowledge_items_learned": 8,
+      "service_calls": 50,
+      "final_success_rate": 0.72,
+      "final_failure_rate": 0.28
+    },
+    "research_assistant": {
+      "total_tasks": 75,
+      "successes": 59,
+      "failures": 16,
+      "by_cycle": [],
+      "learning_cycles": 5,
+      "knowledge_items_learned": 8,
+      "api_calls": 75,
+      "final_success_rate": 0.7866666666666666,
+      "initial_success_rate": 0.75
+    }
+  }
+}
