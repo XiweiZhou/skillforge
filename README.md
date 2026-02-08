@@ -1,17 +1,16 @@
 # SkillForge
 
-**Self-Improving Agents Through Skill Learning and Service Integration**
+**Self-Improving Agents Through Closed-Loop Learning**
 
-SkillForge is a research platform for building autonomous agents that learn from experience. The system demonstrates how agents can improve their performance by learning patterns from task execution, integrating external services, and updating their skill knowledge over time.
+SkillForge is a research platform for building autonomous agents that **genuinely learn from experience**. The v2 architecture implements true closed-loop learning where knowledge is not just stored, but actively applied during execution to prevent errors.
 
-## 🎯 Key Features
+## 🎯 Key Features (v2 Architecture)
 
-- **Automatic Skill Discovery**: Scans and loads skills from the filesystem
-- **Pattern Recognition**: Detects recurring error patterns and success indicators
-- **Knowledge Persistence**: Learned knowledge is stored and updated in skill files
-- **Service Integration**: Seamlessly integrates with MCP services and web APIs
-- **Multi-skill Coordination**: Executes complex tasks using multiple skills
-- **Learning Cycles**: Automatic triggering of learning based on execution patterns
+- **Closed-Loop Learning**: Knowledge → Execution → Outcome → Learning → Knowledge
+- **Actionable Rules**: Condition-based rules that actually prevent errors
+- **Proper Validation**: Ablation testing comparing with/without learning
+- **Constant Error Rates**: No predetermined decay - improvement comes from learning
+- **Rule Effectiveness Tracking**: Confidence updates based on outcomes
 
 ## 🚀 Quick Start
 
@@ -26,10 +25,22 @@ cd skillforge
 pip install -r requirements.txt
 ```
 
-### Running the Complete Demo
+### Running the v2 Demo (Recommended)
 
 ```bash
-# Run all 3 scenarios (225 total tasks)
+# Run v2 demo with proper validation
+python3 demo_v2.py --verbose
+
+# Shows:
+# - Training phase (collect errors at constant rate)
+# - Learning phase (detect patterns, generate rules)
+# - Evaluation phase (compare WITH vs WITHOUT learning)
+```
+
+### Running v1 Scenarios (Legacy)
+
+```bash
+# Run all 3 v1 scenarios (225 total tasks)
 python3 demo_all.py --verbose
 
 # Or run individual scenarios
@@ -37,6 +48,22 @@ python3 scenarios/scenario_1_email.py      # Email Assistant (100 tasks)
 python3 scenarios/scenario_2_calendar.py   # Calendar Coordinator (50 tasks)
 python3 scenarios/scenario_3_research.py   # Research Assistant (75 tasks)
 ```
+
+## 🔄 v1 vs v2 Architecture
+
+### v1 (Broken Loop)
+```
+Task → Execute (random) → Error → Learn Pattern → Update File → [DEAD END]
+```
+Knowledge was stored but never applied. "Improvement" came from predetermined error decay.
+
+### v2 (Closed Loop)
+```
+Task → [Apply Rules] → Execute → Outcome → Learn → Update Rules
+         ↑                                              ↓
+         └──────────────── KnowledgeBase ←──────────────┘
+```
+Rules are applied during execution. Improvement comes from errors actually being prevented.
 
 ## 📊 Demonstration Scenarios
 

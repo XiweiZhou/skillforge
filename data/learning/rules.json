@@ -1,0 +1,40 @@
+{
+  "email_writer": [
+    {
+      "id": "rule_timezoneerror_1",
+      "name": "Prevent Timezone",
+      "rule_type": "prevention",
+      "conditions": [
+        {
+          "field": "task.description",
+          "operator": "matches",
+          "value": "\\d{1,2}\\s*(am|pm|AM|PM)"
+        },
+        {
+          "field": "context.has_timezone",
+          "operator": "equals",
+          "value": false
+        }
+      ],
+      "actions": [
+        {
+          "action_type": "add_field",
+          "target": "context.timezone",
+          "value": "UTC"
+        },
+        {
+          "action_type": "flag",
+          "target": "_flags",
+          "value": "timezone_added"
+        }
+      ],
+      "source_error_type": "TimezoneError",
+      "confidence": 0.5714285714285714,
+      "times_applied": 0,
+      "times_successful": 0,
+      "created_at": "2026-02-07T23:12:54.845000",
+      "last_applied": null,
+      "description": "Add timezone when time is mentioned without one"
+    }
+  ]
+}

@@ -1,0 +1,56 @@
+{
+  "timestamp": "2026-02-07T23:12:54.842556",
+  "scenarios": {
+    "email_assistant": {
+      "training": {
+        "tasks": 50,
+        "successes": 36,
+        "failures": 14,
+        "errors_by_type": {
+          "AttachmentError": 3,
+          "SpamTriggerError": 3,
+          "TimezoneError": 8
+        },
+        "success_rate": 0.72
+      },
+      "learning": {
+        "errors_analyzed": 14,
+        "patterns_detected": 1,
+        "rules_generated": 1,
+        "rules_applied_total": 0,
+        "rule_success_rate": 0
+      },
+      "baseline": {
+        "tasks": 50,
+        "successes": 34,
+        "failures": 16,
+        "errors_by_type": {
+          "SpamTriggerError": 4,
+          "TimezoneError": 10,
+          "AttachmentError": 1,
+          "FormatError": 4
+        },
+        "rules_applied_total": 0,
+        "errors_prevented": 0,
+        "apply_rules": false,
+        "success_rate": 0.68
+      },
+      "with_learning": {
+        "tasks": 50,
+        "successes": 39,
+        "failures": 11,
+        "errors_by_type": {
+          "SpamTriggerError": 7,
+          "TimezoneError": 2,
+          "FormatError": 3
+        },
+        "rules_applied_total": 21,
+        "errors_prevented": 18,
+        "apply_rules": true,
+        "success_rate": 0.78
+      },
+      "improvement": 0.09999999999999998,
+      "timestamp": "2026-02-07T23:12:54.847152"
+    }
+  }
+}
