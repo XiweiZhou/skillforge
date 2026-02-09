@@ -240,10 +240,16 @@ class DeclarativeSkill(BaseSkill):
 
     No Python subclassing needed. Users create a directory with SKILL.md and
     the engine handles execution, learning, and knowledge application.
+
+    Execution priority:
+      1. Custom handler (scripts/handler.py)
+      2. LLM-powered (when llm_provider is configured and available)
+      3. Template-based (keyword matching + template copy, fallback)
     """
 
     def __init__(self, name: str, knowledge_base: KnowledgeBase,
-                 skill_metadata: Dict[str, Any], skill_dir: Path):
+                 skill_metadata: Dict[str, Any], skill_dir: Path,
+                 llm_provider=None, tool_registry=None):
         super().__init__(name, knowledge_base)
         self.skill_metadata = skill_metadata
         self.skill_dir = skill_dir
@@ -253,6 +259,13 @@ class DeclarativeSkill(BaseSkill):
         self.context_fields = skill_metadata.get('metadata', {}).get('context_fields', {})
         self._templates = self._load_templates()
         self._handler = self._load_handler()
+        self._llm_provider = llm_provider
+        self._tool_registry = tool_registry
+
+        # Load tools declared in SKILL.md metadata.tools
+        tool_names = skill_metadata.get('metadata', {}).get('tools', [])
+        if tool_names and self._tool_registry:
+            self._tool_registry.load_tools_for_skill(tool_names)
 
     def _load_templates(self) -> Dict[str, Any]:
         """Load output templates from assets/templates.yaml if present"""
@@ -275,11 +288,74 @@ class DeclarativeSkill(BaseSkill):
         return None
 
     def _execute_impl(self, context: ExecutionContext) -> ExecutionResult:
-        """Execute using custom handler or declarative templates"""
-        # Custom handler takes priority
+        """Execute using handler, LLM, or template fallback."""
         if self._handler:
             return self._handler(context, self.skill_metadata)
 
+        if self._llm_provider and self._llm_provider.is_available():
+            return self._execute_with_llm(context)
+
+        return self._execute_with_templates(context)
+
+    def _execute_with_llm(self, context: ExecutionContext) -> ExecutionResult:
+        """Execute using the configured LLM provider."""
+        from llm import LLMRequest
+
+        # Build tool schemas from registry
+        tool_schemas = []
+        if self._tool_registry:
+            tool_schemas = [
+                d.to_llm_schema()
+                for d in self._tool_registry.get_definitions()
+            ]
+
+        request = LLMRequest(
+            task_description=context.task_description,
+            skill_name=self.name,
+            skill_description=self.description,
+            templates=self._templates,
+            context=context.to_dict(),
+            available_tools=tool_schemas,
+        )
+
+        # First LLM call
+        response = self._llm_provider.generate(request)
+
+        # If LLM requested tool calls, execute them and call again
+        if response.tool_calls and self._tool_registry:
+            executor = self._tool_registry.get_executor()
+            tool_results = executor.execute_all(response.tool_calls)
+            response = self._llm_provider.generate(request, tool_results=tool_results)
+
+        intent = response.intent or self._parse_intent(context.task_description.lower())
+        output_content = response.content if response.content else {
+            'content': f'Output for: {context.task_description}'
+        }
+
+        # Run flag-based validation
+        validation_errors = self._validate(context)
+        if validation_errors:
+            return ExecutionResult(
+                status=ExecutionStatus.FAILURE,
+                errors=validation_errors,
+                warnings=context.warnings,
+            )
+
+        output = SkillOutput(
+            content=output_content,
+            output_type=self.output_type,
+            metadata={'intent': intent, 'warnings': context.warnings,
+                      'llm_powered': True},
+        )
+
+        return ExecutionResult(
+            status=ExecutionStatus.SUCCESS,
+            output=output,
+            warnings=context.warnings,
+        )
+
+    def _execute_with_templates(self, context: ExecutionContext) -> ExecutionResult:
+        """Execute using keyword matching and template output (fallback)."""
         task = context.task_description.lower()
 
         # Parse intent from templates
@@ -376,7 +452,8 @@ class SkillLoader:
 
     @classmethod
     def load_all(cls, knowledge_base: KnowledgeBase,
-                 skills_dir: Path) -> Dict[str, BaseSkill]:
+                 skills_dir: Path, llm_provider=None,
+                 tool_registry=None) -> Dict[str, BaseSkill]:
         """Scan skills directory and load each skill from its SKILL.md"""
         skills = {}
 
@@ -392,7 +469,9 @@ class SkillLoader:
                 continue
 
             try:
-                skill = cls._load_skill(skill_dir, knowledge_base)
+                skill = cls._load_skill(skill_dir, knowledge_base,
+                                        llm_provider=llm_provider,
+                                        tool_registry=tool_registry)
                 if skill:
                     skills[skill.name] = skill
                     logger.info(f"Loaded skill: {skill.name} from {skill_dir.name}/")
@@ -403,7 +482,9 @@ class SkillLoader:
 
     @classmethod
     def _load_skill(cls, skill_dir: Path,
-                    knowledge_base: KnowledgeBase) -> Optional[BaseSkill]:
+                    knowledge_base: KnowledgeBase,
+                    llm_provider=None,
+                    tool_registry=None) -> Optional[BaseSkill]:
         """Load a single skill from its directory"""
         skill_md = skill_dir / "SKILL.md"
         frontmatter = cls._parse_frontmatter(skill_md.read_text())
@@ -425,6 +506,8 @@ class SkillLoader:
             knowledge_base=knowledge_base,
             skill_metadata=frontmatter,
             skill_dir=skill_dir,
+            llm_provider=llm_provider,
+            tool_registry=tool_registry,
         )
 
     @staticmethod
@@ -446,14 +529,17 @@ class SkillRegistry:
     """Registry of available skills - loads from skill directories"""
 
     def __init__(self, knowledge_base: KnowledgeBase,
-                 skills_dir: Optional[Path] = None):
+                 skills_dir: Optional[Path] = None,
+                 llm_provider=None, tool_registry=None):
         self.knowledge_base = knowledge_base
         self.skills: Dict[str, BaseSkill] = {}
         self._trigger_index: Dict[str, str] = {}
 
         # Load skills from disk
         skills_dir = skills_dir or Path(__file__).parent / "skills"
-        loaded = SkillLoader.load_all(knowledge_base, skills_dir)
+        loaded = SkillLoader.load_all(knowledge_base, skills_dir,
+                                      llm_provider=llm_provider,
+                                      tool_registry=tool_registry)
         for skill in loaded.values():
             self.register(skill)
 

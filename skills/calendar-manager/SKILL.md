@@ -16,6 +16,9 @@ metadata:
     - meeting
     - book
     - reserve
+  tools:
+    - calendar_availability
+    - calendar_schedule
   context_fields:
     has_conflict: { type: bool, default: false }
     violates_preferences: { type: bool, default: false }

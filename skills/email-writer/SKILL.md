@@ -15,6 +15,8 @@ metadata:
     - write email
     - compose
     - draft email
+  tools:
+    - web_search
   context_fields:
     has_timezone: { type: bool, default: false }
     has_attachment: { type: bool, default: false }

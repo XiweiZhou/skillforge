@@ -10,6 +10,8 @@ metadata:
   version: "1.0"
   category: research
   output_type: summary
+  tools:
+    - web_search
   triggers:
     - summarize
     - summary

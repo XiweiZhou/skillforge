@@ -6,6 +6,8 @@ from pathlib import Path
 
 from knowledge import KnowledgeBase
 from skills import SkillRegistry, SkillLoader, DeclarativeSkill, ExecutionContext
+from llm import MockProvider
+from tools import ToolRegistry
 
 
 @pytest.fixture
@@ -96,3 +98,15 @@ def real_skills_dir():
 def real_skill_registry(knowledge_base, real_skills_dir):
     """Registry loaded from the project's real skills directory."""
     return SkillRegistry(knowledge_base, real_skills_dir)
+
+
+@pytest.fixture
+def mock_llm_provider():
+    """MockProvider instance for deterministic LLM testing."""
+    return MockProvider()
+
+
+@pytest.fixture
+def tool_registry():
+    """Fresh ToolRegistry instance."""
+    return ToolRegistry()

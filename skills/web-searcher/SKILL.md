@@ -16,6 +16,9 @@ metadata:
     - research
     - look up
     - query
+  tools:
+    - web_search
+    - source_credibility
   context_fields:
     avg_credibility: { type: float, default: 0.5 }
 ---

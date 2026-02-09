@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from knowledge import KnowledgeBase, RuleGenerator
 from skills import SkillRegistry, ExecutionContext
 from learning import LearningEngine, LearningMetrics
+from tools import ToolRegistry
 
 logging.basicConfig(
     level=logging.INFO,
@@ -47,23 +48,34 @@ class SkillForge:
 
     def __init__(self,
                  data_dir: Optional[Path] = None,
-                 skills_dir: Optional[Path] = None):
+                 skills_dir: Optional[Path] = None,
+                 llm_provider=None):
         """
         Initialize SkillForge.
 
         Args:
             data_dir: Directory for learning data (default: ./data/learning)
             skills_dir: Directory containing skill definitions (default: ./skills)
+            llm_provider: Optional LLM provider for intelligent execution.
+                          When None, skills fall back to template-based execution.
         """
         self.data_dir = Path(data_dir or "./data/learning")
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.skills_dir = Path(skills_dir) if skills_dir else None
+        self.llm_provider = llm_provider
 
         # Initialize knowledge base
         self.knowledge_base = KnowledgeBase(self.data_dir)
 
+        # Initialize tool registry (shared across all skills)
+        self.tool_registry = ToolRegistry()
+
         # Initialize skill registry (loads from skills/ directory)
-        self.skill_registry = SkillRegistry(self.knowledge_base, self.skills_dir)
+        self.skill_registry = SkillRegistry(
+            self.knowledge_base, self.skills_dir,
+            llm_provider=self.llm_provider,
+            tool_registry=self.tool_registry,
+        )
 
         # Initialize learning engine
         self.learning_engine = LearningEngine(self.knowledge_base, self.data_dir)
@@ -179,7 +191,11 @@ class SkillForge:
         return keywords
 
     def _classify_error(self, error_message: str) -> str:
-        """Classify error message using keywords derived from PATTERN_LIBRARY"""
+        """Classify error message using LLM provider or keyword fallback."""
+        if self.llm_provider and self.llm_provider.is_available():
+            known_types = list(set(self._error_keywords.values()))
+            return self.llm_provider.classify_error(error_message, known_types)
+
         error_lower = error_message.lower()
         for keyword, error_type in self._error_keywords.items():
             if keyword in error_lower:
@@ -266,8 +282,13 @@ class SkillForge:
         self.tasks_failed = 0
         self.learning_engine.clear_data()
 
-        # Re-initialize skill registry to reset skill stats
-        self.skill_registry = SkillRegistry(self.knowledge_base, self.skills_dir)
+        # Re-initialize tool registry and skill registry to reset state
+        self.tool_registry = ToolRegistry()
+        self.skill_registry = SkillRegistry(
+            self.knowledge_base, self.skills_dir,
+            llm_provider=self.llm_provider,
+            tool_registry=self.tool_registry,
+        )
 
 
 def main():
