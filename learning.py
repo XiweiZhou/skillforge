@@ -137,6 +137,91 @@ class ErrorRepository:
             self.errors_file.unlink()
 
 
+@dataclass
+class StepErrorRecord:
+    """Error record for a single step within a multi-step execution."""
+    timestamp: datetime
+    skill_name: str
+    task_description: str
+    step_number: int
+    tool_name: str
+    error_type: str
+    error_message: str
+    recovery_applied: List[str] = field(default_factory=list)
+    recovery_succeeded: bool = False
+    context_snapshot: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict:
+        return {
+            'timestamp': self.timestamp.isoformat(),
+            'skill': self.skill_name,
+            'task': self.task_description,
+            'step': self.step_number,
+            'tool': self.tool_name,
+            'error_type': self.error_type,
+            'error_message': self.error_message,
+            'recovery_applied': self.recovery_applied,
+            'recovery_succeeded': self.recovery_succeeded,
+            'context': self.context_snapshot,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> 'StepErrorRecord':
+        return cls(
+            timestamp=datetime.fromisoformat(data['timestamp']),
+            skill_name=data['skill'],
+            task_description=data['task'],
+            step_number=data['step'],
+            tool_name=data['tool'],
+            error_type=data['error_type'],
+            error_message=data['error_message'],
+            recovery_applied=data.get('recovery_applied', []),
+            recovery_succeeded=data.get('recovery_succeeded', False),
+            context_snapshot=data.get('context', {}),
+        )
+
+
+class StepErrorRepository:
+    """Repository for step-level error records."""
+
+    def __init__(self, data_dir: Path):
+        self.data_dir = Path(data_dir)
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.errors_file = self.data_dir / "step_errors.jsonl"
+        self.errors: List[StepErrorRecord] = []
+        self._load()
+
+    def _load(self):
+        if self.errors_file.exists():
+            try:
+                with open(self.errors_file, 'r') as f:
+                    for line in f:
+                        if line.strip():
+                            self.errors.append(
+                                StepErrorRecord.from_dict(json.loads(line)))
+            except Exception as e:
+                logger.error(f"Error loading step errors: {e}")
+
+    def record(self, error: StepErrorRecord):
+        self.errors.append(error)
+        try:
+            with open(self.errors_file, 'a') as f:
+                f.write(json.dumps(error.to_dict()) + '\n')
+        except Exception as e:
+            logger.error(f"Error writing step error record: {e}")
+
+    def get_by_skill(self, skill_name: str) -> List[StepErrorRecord]:
+        return [e for e in self.errors if e.skill_name == skill_name]
+
+    def get_by_type(self, error_type: str) -> List[StepErrorRecord]:
+        return [e for e in self.errors if e.error_type == error_type]
+
+    def clear(self):
+        self.errors = []
+        if self.errors_file.exists():
+            self.errors_file.unlink()
+
+
 class SuccessRepository:
     """Repository for success records"""
 
@@ -280,6 +365,7 @@ class LearningEngine:
         self.data_dir = Path(data_dir)
 
         self.error_repo = ErrorRepository(data_dir)
+        self.step_error_repo = StepErrorRepository(data_dir)
         self.success_repo = SuccessRepository(data_dir)
         self.pattern_detector = PatternDetector()
         self.rule_generator = RuleGenerator()
@@ -323,6 +409,32 @@ class LearningEngine:
             execution_time_ms=execution_time_ms,
         )
         self.success_repo.record(record)
+
+    def record_step_error(self,
+                          skill_name: str,
+                          task_description: str,
+                          step_number: int,
+                          tool_name: str,
+                          error_type: str,
+                          error_message: str,
+                          recovery_applied: Optional[List[str]] = None,
+                          recovery_succeeded: bool = False,
+                          context_snapshot: Optional[Dict] = None):
+        """Record a step-level error during multi-step execution."""
+        record = StepErrorRecord(
+            timestamp=datetime.now(),
+            skill_name=skill_name,
+            task_description=task_description,
+            step_number=step_number,
+            tool_name=tool_name,
+            error_type=error_type,
+            error_message=error_message,
+            recovery_applied=recovery_applied or [],
+            recovery_succeeded=recovery_succeeded,
+            context_snapshot=context_snapshot or {},
+        )
+        self.step_error_repo.record(record)
+        logger.debug(f"Recorded step error: {error_type} at step {step_number}")
 
     def run_learning_cycle(self,
                           min_frequency: int = 3,
@@ -378,6 +490,50 @@ class LearningEngine:
                         self.total_rules_generated += 1
                         logger.info(f"Generated rule: {rule.name} for {skill_name}")
 
+        # Pass 2: Generate RECOVERY rules from step-level errors
+        step_errors_by_skill = defaultdict(list)
+        for error in self.step_error_repo.errors:
+            step_errors_by_skill[error.skill_name].append(error)
+
+        for skill_name, step_errors in step_errors_by_skill.items():
+            # Convert to ErrorRecord for PatternDetector compatibility
+            as_error_records = [
+                ErrorRecord(
+                    timestamp=se.timestamp,
+                    skill_name=se.skill_name,
+                    task_description=se.task_description,
+                    error_type=se.error_type,
+                    error_message=se.error_message,
+                    context_snapshot=se.context_snapshot,
+                    rules_applied=se.recovery_applied,
+                )
+                for se in step_errors
+            ]
+
+            self.pattern_detector.min_frequency = min_frequency
+            self.pattern_detector.min_confidence = min_confidence
+            patterns = self.pattern_detector.detect_patterns(as_error_records)
+
+            for error_type, confidence, frequency, features in patterns:
+                existing_rules = self.knowledge_base.get_rules(skill_name)
+                already_has_recovery = any(
+                    r.source_error_type == error_type
+                    and r.rule_type == RuleType.RECOVERY
+                    for r in existing_rules
+                )
+                if not already_has_recovery:
+                    rule = self.rule_generator.generate_recovery_rule_from_error(
+                        error_type, frequency, confidence,
+                    )
+                    if rule:
+                        self.knowledge_base.add_rule(skill_name, rule)
+                        metrics.rules_generated += 1
+                        self.total_rules_generated += 1
+                        logger.info(
+                            f"Generated recovery rule: {rule.name} "
+                            f"for {skill_name}"
+                        )
+
         # Calculate rule success rate
         kb_stats = self.knowledge_base.get_statistics()
         metrics.rules_applied_total = kb_stats['total_applications']
@@ -408,6 +564,7 @@ class LearningEngine:
     def clear_data(self):
         """Clear all learning data (for testing)"""
         self.error_repo.clear()
+        self.step_error_repo.clear()
         self.success_repo.clear()
         self.learning_cycles = 0
 

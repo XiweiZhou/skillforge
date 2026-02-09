@@ -258,21 +258,24 @@ def run_evaluation_phase(forge: SkillForge, num_tasks: int = 50,
 
 def run_complete_scenario(num_training: int = 50,
                          num_eval: int = 50,
-                         verbose: bool = True) -> Dict:
+                         verbose: bool = True,
+                         seed: Optional[int] = None) -> Dict:
     """
     Run complete scenario with training, learning, and evaluation phases
     """
+    if seed is not None:
+        random.seed(seed)
+
     # Initialize fresh system
     forge = SkillForge()
     forge.reset()
 
     print("\n" + "=" * 70)
-    print("SCENARIO : EMAIL ASSISTANT WITH CLOSED-LOOP LEARNING")
+    print("EMAIL ASSISTANT - CLOSED-LOOP LEARNING SCENARIO")
     print("=" * 70)
-    print("\nKey difference from v1:")
-    print("  - Error rates are CONSTANT (no predetermined decay)")
-    print("  - Improvement ONLY comes from rules actually preventing errors")
-    print("  - Proper ablation test compares with/without learning")
+    print("\n  Error rates are CONSTANT (no predetermined decay)")
+    print("  Improvement ONLY comes from rules actually preventing errors")
+    print("  Ablation test compares WITH vs WITHOUT learned knowledge")
     print("")
 
     # Phase 1: Training (collect errors)
@@ -294,7 +297,7 @@ def run_complete_scenario(num_training: int = 50,
 
     # Final report
     print("\n" + "=" * 70)
-    print("SCENARIO  RESULTS")
+    print("SCENARIO RESULTS")
     print("=" * 70)
 
     print(f"\nTraining Phase ({num_training} tasks):")
@@ -338,6 +341,7 @@ def run_complete_scenario(num_training: int = 50,
         'baseline': baseline_results,
         'with_learning': learned_results,
         'improvement': improvement,
+        'seed': seed,
         'timestamp': datetime.now().isoformat(),
     }
 

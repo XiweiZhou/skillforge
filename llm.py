@@ -118,8 +118,11 @@ class MockProvider(LLMProvider):
     preconfigured responses for test-specific overrides.
     """
 
-    def __init__(self, responses: Optional[Dict[str, Any]] = None):
+    def __init__(self, responses: Optional[Dict[str, Any]] = None,
+                 step_responses: Optional[List[LLMResponse]] = None):
         self._responses = responses or {}
+        self._step_responses = step_responses or []
+        self._generate_call_count = 0
 
     def classify_intent(self, request: LLMRequest) -> str:
         if 'classify_intent' in self._responses:
@@ -137,6 +140,17 @@ class MockProvider(LLMProvider):
 
     def generate(self, request: LLMRequest,
                  tool_results: Optional[List[ToolResult]] = None) -> LLMResponse:
+        self._generate_call_count += 1
+
+        # Step responses take priority when available
+        if self._step_responses:
+            idx = min(self._generate_call_count - 1,
+                      len(self._step_responses) - 1)
+            resp = self._step_responses[idx]
+            if isinstance(resp, LLMResponse):
+                return resp
+            return LLMResponse(**resp)
+
         if 'generate' in self._responses:
             resp = self._responses['generate']
             if isinstance(resp, LLMResponse):

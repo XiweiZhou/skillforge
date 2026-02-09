@@ -247,3 +247,164 @@ class TestLLMPoweredExecution:
         result = skill.execute(ctx)
 
         assert result.output.content == {"handler": True}
+
+
+class TestMockProviderMultiStep:
+    def test_step_responses_sequence(self):
+        provider = MockProvider(step_responses=[
+            LLMResponse(intent="step1",
+                        tool_calls=[ToolCall("search", {"q": "test"})]),
+            LLMResponse(intent="step2", content={"result": "done"}),
+        ])
+        req = LLMRequest(task_description="t", skill_name="s",
+                         skill_description="d")
+        r1 = provider.generate(req)
+        assert r1.intent == "step1"
+        assert len(r1.tool_calls) == 1
+        r2 = provider.generate(req)
+        assert r2.intent == "step2"
+        assert r2.content == {"result": "done"}
+
+    def test_step_responses_last_repeats(self):
+        provider = MockProvider(step_responses=[
+            LLMResponse(content={"x": 1}),
+        ])
+        req = LLMRequest(task_description="t", skill_name="s",
+                         skill_description="d")
+        r1 = provider.generate(req)
+        r2 = provider.generate(req)
+        assert r1.content == r2.content
+
+    def test_step_responses_empty_falls_back(self):
+        provider = MockProvider(step_responses=[])
+        req = LLMRequest(
+            task_description="hello", skill_name="s", skill_description="d",
+            templates={"g": {"match": ["hello"], "body": "Hi"}},
+        )
+        resp = provider.generate(req)
+        assert resp.intent == "g"
+
+    def test_existing_responses_dict_still_works(self):
+        provider = MockProvider(
+            responses={"generate": LLMResponse(intent="custom")})
+        req = LLMRequest(task_description="t", skill_name="s",
+                         skill_description="d")
+        assert provider.generate(req).intent == "custom"
+
+
+class TestMultiStepExecution:
+    def test_loop_exits_on_no_tool_calls(self, sample_skill_with_templates,
+                                         knowledge_base):
+        """When LLM returns content without tool_calls, loop exits immediately."""
+        provider = MockProvider()
+        skill = SkillLoader._load_skill(
+            sample_skill_with_templates, knowledge_base,
+            llm_provider=provider)
+        ctx = ExecutionContext(task_description="hello world", task_id="t1")
+        result = skill.execute(ctx)
+        assert result.success
+        assert len(result.steps) == 0
+
+    def test_multi_step_with_tools(self, sample_skill_dir, knowledge_base):
+        """Simulate multi-step: LLM calls tool, gets result, calls again, done."""
+        from tools import ToolRegistry, ToolDefinition
+        registry = ToolRegistry()
+        registry.register_custom_tool(
+            ToolDefinition(name="greet", description="Greet someone"),
+            lambda name="World": f"Hello, {name}!")
+
+        provider = MockProvider(step_responses=[
+            LLMResponse(tool_calls=[ToolCall("greet", {"name": "A"})]),
+            LLMResponse(tool_calls=[ToolCall("greet", {"name": "B"})]),
+            LLMResponse(intent="done", content={"result": "complete"}),
+        ])
+        skill = SkillLoader._load_skill(
+            sample_skill_dir, knowledge_base,
+            llm_provider=provider, tool_registry=registry)
+        ctx = ExecutionContext(task_description="test", task_id="t1")
+        result = skill.execute(ctx)
+        assert result.success
+        assert len(result.steps) == 2
+        assert result.output.metadata.get('steps_taken') == 3
+
+    def test_max_steps_enforced(self, sample_skill_dir, knowledge_base):
+        """Loop stops at max_steps even if LLM keeps requesting tools."""
+        from tools import ToolRegistry, ToolDefinition
+        registry = ToolRegistry()
+        registry.register_custom_tool(
+            ToolDefinition(name="echo", description="Echo"),
+            lambda msg="x": msg)
+
+        # Provider always returns tool calls (never stops)
+        provider = MockProvider(step_responses=[
+            LLMResponse(tool_calls=[ToolCall("echo", {"msg": "x"})]),
+        ])
+        skill = SkillLoader._load_skill(
+            sample_skill_dir, knowledge_base,
+            llm_provider=provider, tool_registry=registry)
+        ctx = ExecutionContext(task_description="test", task_id="t1")
+        result = skill.execute(ctx)
+        # Default max_steps is 5; all 5 steps should have tool calls
+        assert len(result.steps) == 5
+
+    def test_tool_error_triggers_recovery(self, sample_skill_dir,
+                                          knowledge_base):
+        """Tool failure triggers RECOVERY rules, LLM sees recovery info."""
+        from tools import ToolRegistry, ToolDefinition
+
+        registry = ToolRegistry()
+
+        def failing_tool():
+            raise ValueError("timezone not set for scheduling")
+
+        registry.register_custom_tool(
+            ToolDefinition(name="bad_tool", description="Fails"), failing_tool)
+
+        # Add a RECOVERY rule for timezone errors
+        rule = Rule(
+            id="recovery_tz", name="Recover Timezone",
+            rule_type=RuleType.RECOVERY,
+            conditions=[Condition("context.has_timezone",
+                                  ConditionOperator.EQUALS, False)],
+            actions=[Action("add_field", "context.timezone", "UTC")],
+            confidence=1.0, source_error_type="TimezoneError",
+        )
+
+        provider = MockProvider(step_responses=[
+            LLMResponse(tool_calls=[ToolCall("bad_tool", {})]),
+            LLMResponse(intent="recovered", content={"recovered": True}),
+        ])
+        skill = SkillLoader._load_skill(
+            sample_skill_dir, knowledge_base,
+            llm_provider=provider, tool_registry=registry)
+        knowledge_base.add_rule(skill.name, rule)
+
+        ctx = ExecutionContext(task_description="test at 2pm", task_id="t1",
+                              has_timezone=False)
+        result = skill.execute(ctx)
+        assert result.success
+        assert len(result.steps) == 1
+        assert "recovery_tz" in result.steps[0].recovery_applied
+        assert result.steps[0].errors  # tool error recorded
+
+    def test_steps_recorded_in_result(self, sample_skill_dir, knowledge_base):
+        """ExecutionResult.steps captures tool calls and results."""
+        from tools import ToolRegistry, ToolDefinition
+
+        registry = ToolRegistry()
+        registry.register_custom_tool(
+            ToolDefinition(name="add", description="Add numbers"),
+            lambda a=0, b=0: a + b)
+
+        provider = MockProvider(step_responses=[
+            LLMResponse(tool_calls=[ToolCall("add", {"a": 1, "b": 2})]),
+            LLMResponse(content={"sum": 3}),
+        ])
+        skill = SkillLoader._load_skill(
+            sample_skill_dir, knowledge_base,
+            llm_provider=provider, tool_registry=registry)
+        ctx = ExecutionContext(task_description="test", task_id="t1")
+        result = skill.execute(ctx)
+        assert len(result.steps) == 1
+        assert result.steps[0].tool_calls[0]['tool'] == 'add'
+        assert result.steps[0].errors == []

@@ -23,6 +23,7 @@ class RuleType(Enum):
     VALIDATION = "validation"      # Validate output before returning
     TRANSFORMATION = "transformation"  # Transform input/output
     OPTIMIZATION = "optimization"  # Improve efficiency
+    RECOVERY = "recovery"          # Mid-execution error recovery
 
 
 class ConditionOperator(Enum):
@@ -383,6 +384,12 @@ class KnowledgeBase:
 
         return result
 
+    def get_recovery_actions(self, skill_name: str,
+                             context: Dict[str, Any]) -> Dict[str, Any]:
+        """Apply RECOVERY rules and return the modified context."""
+        return self.apply_rules(skill_name, context,
+                                rule_types=[RuleType.RECOVERY])
+
     def record_rule_outcome(self, rule_id: str, successful: bool):
         """Record whether a rule application was successful"""
         if rule_id in self.rule_index:
@@ -434,6 +441,10 @@ class RuleGenerator:
                 Action('add_field', 'context.timezone', 'UTC'),
                 Action('flag', '_flags', 'timezone_added'),
             ],
+            'recovery': [
+                Action('add_field', 'context.timezone', 'UTC'),
+                Action('append', 'context.warnings', 'Timezone was missing; defaulted to UTC during recovery'),
+            ],
             'description': 'Add timezone when time is mentioned without one'
         },
         'SpamTriggerError': {
@@ -444,6 +455,9 @@ class RuleGenerator:
             'remediation': [
                 Action('flag', '_flags', 'potential_spam'),
                 Action('append', 'context.warnings', 'Contains spam trigger words'),
+            ],
+            'recovery': [
+                Action('append', 'context.warnings', 'Spam trigger detected during execution; content may need review'),
             ],
             'description': 'Flag content with spam trigger words for review'
         },
@@ -457,6 +471,9 @@ class RuleGenerator:
                 Action('flag', '_flags', 'attachment_mentioned'),
                 Action('append', 'context.warnings', 'Attachment mentioned but not provided'),
             ],
+            'recovery': [
+                Action('append', 'context.warnings', 'Attachment reference detected in tool error; continuing without attachment'),
+            ],
             'description': 'Warn when attachment is mentioned but not provided'
         },
         'ConflictError': {
@@ -466,6 +483,9 @@ class RuleGenerator:
             'remediation': [
                 Action('flag', '_flags', 'scheduling_conflict'),
                 Action('append', 'context.warnings', 'Scheduling conflict detected'),
+            ],
+            'recovery': [
+                Action('append', 'context.warnings', 'Scheduling conflict encountered during execution; suggest alternative time'),
             ],
             'description': 'Flag scheduling conflicts'
         },
@@ -487,6 +507,9 @@ class RuleGenerator:
                 Action('flag', '_flags', 'vague_query'),
                 Action('append', 'context.suggestions', 'Query may be too vague, consider adding specifics'),
             ],
+            'recovery': [
+                Action('append', 'context.suggestions', 'Query was too vague for tool; consider refining search terms'),
+            ],
             'description': 'Flag overly simple or vague queries'
         },
         'LowCredibilityError': {
@@ -496,6 +519,9 @@ class RuleGenerator:
             'remediation': [
                 Action('flag', '_flags', 'low_credibility_sources'),
                 Action('append', 'context.warnings', 'Sources have low credibility scores'),
+            ],
+            'recovery': [
+                Action('append', 'context.warnings', 'Low credibility sources detected during search; filtering results'),
             ],
             'description': 'Warn about low credibility sources'
         },
@@ -541,6 +567,27 @@ class RuleGenerator:
         )
 
         return rule
+
+    def generate_recovery_rule_from_error(self, error_type: str,
+                                           frequency: int,
+                                           confidence: float) -> Optional[Rule]:
+        """Generate a RECOVERY rule from a PATTERN_LIBRARY entry's recovery section."""
+        if error_type not in self.PATTERN_LIBRARY:
+            return None
+        pattern = self.PATTERN_LIBRARY[error_type]
+        if 'recovery' not in pattern:
+            return None
+
+        return Rule(
+            id=self._generate_rule_id(f"{error_type}_recovery"),
+            name=f"Recover {error_type.replace('Error', '')}",
+            rule_type=RuleType.RECOVERY,
+            conditions=pattern['detection'].copy(),
+            actions=pattern['recovery'].copy(),
+            source_error_type=error_type,
+            confidence=confidence,
+            description=f"Recovery: {pattern['description']}",
+        )
 
     def generate_custom_rule(self,
                             name: str,

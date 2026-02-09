@@ -165,6 +165,24 @@ class SkillForge:
                     rules_applied=result.rules_applied,
                 )
 
+        # Record step-level errors for learning
+        for step in result.steps:
+            for error_msg in step.errors:
+                error_type = self._classify_error(error_msg)
+                tool_name = (step.tool_calls[0]['tool']
+                             if step.tool_calls else 'unknown')
+                self.learning_engine.record_step_error(
+                    skill_name=skill.name,
+                    task_description=task_description,
+                    step_number=step.step_number,
+                    tool_name=tool_name,
+                    error_type=error_type,
+                    error_message=error_msg,
+                    recovery_applied=step.recovery_applied,
+                    recovery_succeeded=result.success,
+                    context_snapshot=result.context_snapshot,
+                )
+
         return ForgeResult(
             task_id=task_id,
             skill_name=skill.name,

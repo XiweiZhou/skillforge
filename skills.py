@@ -12,6 +12,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, List, Any, Callable
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from enum import Enum
 
 import yaml
@@ -117,6 +118,25 @@ class SkillOutput:
         self.metadata = metadata or {}
 
 
+@dataclass
+class StepRecord:
+    """Record of a single step in multi-step LLM execution."""
+    step_number: int
+    tool_calls: List[Dict[str, Any]] = field(default_factory=list)
+    tool_results: List[Dict[str, Any]] = field(default_factory=list)
+    errors: List[str] = field(default_factory=list)
+    recovery_applied: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'step': self.step_number,
+            'tool_calls': self.tool_calls,
+            'tool_results': self.tool_results,
+            'errors': self.errors,
+            'recovery_applied': self.recovery_applied,
+        }
+
+
 class ExecutionResult:
     """Result of skill execution"""
     def __init__(self, status: ExecutionStatus,
@@ -125,7 +145,8 @@ class ExecutionResult:
                  warnings: Optional[List[str]] = None,
                  rules_applied: Optional[List[str]] = None,
                  execution_time_ms: float = 0.0,
-                 context_snapshot: Optional[Dict] = None):
+                 context_snapshot: Optional[Dict] = None,
+                 steps: Optional[List[StepRecord]] = None):
         self.status = status
         self.output = output
         self.errors = errors or []
@@ -133,6 +154,7 @@ class ExecutionResult:
         self.rules_applied = rules_applied or []
         self.execution_time_ms = execution_time_ms
         self.context_snapshot = context_snapshot
+        self.steps: List[StepRecord] = steps or []
 
     @property
     def success(self) -> bool:
@@ -261,6 +283,7 @@ class DeclarativeSkill(BaseSkill):
         self._handler = self._load_handler()
         self._llm_provider = llm_provider
         self._tool_registry = tool_registry
+        self._max_steps = skill_metadata.get('metadata', {}).get('max_steps', 5)
 
         # Load tools declared in SKILL.md metadata.tools
         tool_names = skill_metadata.get('metadata', {}).get('tools', [])
@@ -293,13 +316,19 @@ class DeclarativeSkill(BaseSkill):
             return self._handler(context, self.skill_metadata)
 
         if self._llm_provider and self._llm_provider.is_available():
-            return self._execute_with_llm(context)
+            return self._execute_with_llm(context, max_steps=self._max_steps)
 
         return self._execute_with_templates(context)
 
-    def _execute_with_llm(self, context: ExecutionContext) -> ExecutionResult:
-        """Execute using the configured LLM provider."""
-        from llm import LLMRequest
+    def _execute_with_llm(self, context: ExecutionContext,
+                          max_steps: int = 5) -> ExecutionResult:
+        """
+        Execute using the configured LLM provider with multi-step loop.
+
+        Loop: LLM call -> tool calls -> check results -> recovery -> repeat
+        Exits when LLM returns final content (no tool_calls) or max_steps.
+        """
+        from llm import LLMRequest, ToolResult as LLMToolResult
 
         # Build tool schemas from registry
         tool_schemas = []
@@ -318,19 +347,76 @@ class DeclarativeSkill(BaseSkill):
             available_tools=tool_schemas,
         )
 
-        # First LLM call
-        response = self._llm_provider.generate(request)
+        steps: List[StepRecord] = []
+        all_tool_results: List[LLMToolResult] = []
+        response = None
 
-        # If LLM requested tool calls, execute them and call again
-        if response.tool_calls and self._tool_registry:
+        for step_num in range(1, max_steps + 1):
+            # LLM call with accumulated tool results
+            response = self._llm_provider.generate(
+                request,
+                tool_results=all_tool_results if all_tool_results else None,
+            )
+
+            # If no tool calls, LLM produced final output
+            if not response.tool_calls or not self._tool_registry:
+                break
+
+            # Execute tool calls
             executor = self._tool_registry.get_executor()
-            tool_results = executor.execute_all(response.tool_calls)
-            response = self._llm_provider.generate(request, tool_results=tool_results)
+            step_tool_results = executor.execute_all(response.tool_calls)
 
-        intent = response.intent or self._parse_intent(context.task_description.lower())
-        output_content = response.content if response.content else {
-            'content': f'Output for: {context.task_description}'
-        }
+            # Separate successes from failures
+            failed_results = [tr for tr in step_tool_results if not tr.success]
+            step_errors = [tr.error for tr in failed_results if tr.error]
+            recovery_applied = []
+
+            # If tool failures, attempt knowledge-based recovery
+            if failed_results:
+                for tr in failed_results:
+                    error_type = self._classify_tool_error(tr.error or "")
+                    recovery_context = context.to_dict()
+                    recovered = self.knowledge_base.get_recovery_actions(
+                        self.name, recovery_context,
+                    )
+                    new_rules = [
+                        r for r in recovered.get('_applied_rules', [])
+                        if r not in context.applied_rules
+                    ]
+                    recovery_applied.extend(new_rules)
+
+                    if new_rules:
+                        context.update_from_dict(recovered)
+                        request.context = context.to_dict()
+
+            # Record step
+            steps.append(StepRecord(
+                step_number=step_num,
+                tool_calls=[{'tool': tc.tool_name, 'args': tc.arguments,
+                             'id': tc.call_id} for tc in response.tool_calls],
+                tool_results=[{'id': tr.call_id, 'success': tr.success,
+                               'error': tr.error} for tr in step_tool_results],
+                errors=step_errors,
+                recovery_applied=recovery_applied,
+            ))
+
+            # Accumulate all results for next LLM call
+            all_tool_results.extend(step_tool_results)
+
+            # Inject recovery info as synthetic tool result
+            if recovery_applied:
+                all_tool_results.append(LLMToolResult(
+                    call_id=f"recovery_step_{step_num}",
+                    success=True,
+                    data={'recovery_rules': recovery_applied,
+                          'message': 'Knowledge-based recovery applied'},
+                ))
+
+        # Post-loop: build result
+        intent = (response.intent if response and response.intent
+                  else self._parse_intent(context.task_description.lower()))
+        output_content = (response.content if response and response.content
+                          else {'content': f'Output for: {context.task_description}'})
 
         # Run flag-based validation
         validation_errors = self._validate(context)
@@ -339,20 +425,33 @@ class DeclarativeSkill(BaseSkill):
                 status=ExecutionStatus.FAILURE,
                 errors=validation_errors,
                 warnings=context.warnings,
+                steps=steps,
             )
 
         output = SkillOutput(
             content=output_content,
             output_type=self.output_type,
             metadata={'intent': intent, 'warnings': context.warnings,
-                      'llm_powered': True},
+                      'llm_powered': True,
+                      'steps_taken': len(steps) + 1},
         )
 
         return ExecutionResult(
             status=ExecutionStatus.SUCCESS,
             output=output,
             warnings=context.warnings,
+            steps=steps,
         )
+
+    def _classify_tool_error(self, error_message: str) -> str:
+        """Classify a tool error message against known error types."""
+        from knowledge import RuleGenerator
+        error_lower = error_message.lower()
+        for error_type in RuleGenerator.PATTERN_LIBRARY:
+            base = error_type.replace('Error', '').lower()
+            if base in error_lower:
+                return error_type
+        return 'GenericError'
 
     def _execute_with_templates(self, context: ExecutionContext) -> ExecutionResult:
         """Execute using keyword matching and template output (fallback)."""

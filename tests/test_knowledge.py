@@ -180,3 +180,45 @@ class TestRuleGenerator:
         )
         assert rule is not None
         assert rule.name == "Custom"
+
+
+class TestRecoveryRuleType:
+    def test_recovery_in_enum(self):
+        assert RuleType.RECOVERY.value == "recovery"
+
+    def test_recovery_serialization(self):
+        rule = Rule(id="r1", name="Test Recovery", rule_type=RuleType.RECOVERY,
+                    conditions=[], actions=[], confidence=0.8)
+        d = rule.to_dict()
+        assert d['rule_type'] == 'recovery'
+        restored = Rule.from_dict(d)
+        assert restored.rule_type == RuleType.RECOVERY
+
+    def test_generate_recovery_rule(self):
+        gen = RuleGenerator()
+        rule = gen.generate_recovery_rule_from_error("TimezoneError", 5, 0.8)
+        assert rule is not None
+        assert rule.rule_type == RuleType.RECOVERY
+        assert "Recover" in rule.name
+
+    def test_no_recovery_for_unknown_error(self):
+        gen = RuleGenerator()
+        rule = gen.generate_recovery_rule_from_error("UnknownError", 5, 0.8)
+        assert rule is None
+
+    def test_no_recovery_for_pattern_without_recovery_section(self):
+        gen = RuleGenerator()
+        rule = gen.generate_recovery_rule_from_error("PreferenceError", 5, 0.8)
+        assert rule is None
+
+    def test_get_recovery_actions(self, knowledge_base):
+        rule = Rule(
+            id="rec1", name="Recover TZ", rule_type=RuleType.RECOVERY,
+            conditions=[Condition("context.has_timezone", ConditionOperator.EQUALS, False)],
+            actions=[Action("add_field", "context.timezone", "UTC")],
+            confidence=1.0,
+        )
+        knowledge_base.add_rule("email_writer", rule)
+        ctx = {"context": {"has_timezone": False}}
+        result = knowledge_base.get_recovery_actions("email_writer", ctx)
+        assert result["context"]["timezone"] == "UTC"
