@@ -4,6 +4,8 @@
 
 SkillForge successfully demonstrates **self-improving agents** that learn from experience across three distinct scenarios. The complete demonstration executed **225 tasks** with an overall **79.1% success rate** and learned **7 distinct knowledge items** through automated pattern detection.
 
+**Test status**: `python -m pytest -q` → **150 passed** (validated in the repo’s `.venv`).
+
 ## Demonstration Overview
 
 | Metric | Value |
