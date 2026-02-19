@@ -310,7 +310,7 @@ SkillForge uses ablation testing to prove learning effectiveness:
 
 ## Further Reading
 
-- Blog post: `docs/BLOG_CLOSED_LOOP_AGENT_RELIABILITY.md`
+- Blog post: [From Prompt Tweaks to Learning Machines: The Agent Skill Primitive](https://medium.com/@xiweizhou/from-prompt-tweaks-to-learning-machines-the-agent-skill-primitive-93c8fa9dec8c?sk=ac888430da699bce7b635456ae2b1166)
 - Technical appendix: `docs/TECHNICAL_APPENDIX_EMAIL_SCENARIO_WALKTHROUGH.md`
 
 ## Built With
