@@ -38,7 +38,7 @@ python3 demo.py
 pytest tests/ -v
 ```
 
-116 tests across 6 test files covering skill loading, knowledge rules, declarative execution, learning, integration, and spec compliance.
+171 tests across 6 test files covering skill loading, knowledge rules, declarative execution, learning, integration, and spec compliance.
 
 ## Creating a New Skill
 
@@ -307,6 +307,15 @@ SkillForge uses ablation testing to prove learning effectiveness:
 - Meta-learning across scenarios
 - Multi-agent collaborative learning
 - Real-world API integration
+
+## Further Reading
+
+- Blog post: `docs/BLOG_CLOSED_LOOP_AGENT_RELIABILITY.md`
+- Technical appendix: `docs/TECHNICAL_APPENDIX_EMAIL_SCENARIO_WALKTHROUGH.md`
+
+## Built With
+
+This repo was designed and architected by [Xiwei](https://github.com/xiweizhou), built using Claude Code as the primary development tool. The learning loop design, ablation validation approach, and skill architecture are the result of iterative direction and review — Claude wrote implementation code from specifications and feedback.
 
 ## License
 
