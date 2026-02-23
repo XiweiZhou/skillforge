@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from collections import defaultdict
 import random
 
-from knowledge import KnowledgeBase, Rule, RuleGenerator, RuleType
+from knowledge import KnowledgeBase, Rule, RuleGenerator, RuleType, RuleStatus
 
 logger = logging.getLogger("Learning")
 
@@ -472,10 +472,14 @@ class LearningEngine:
 
             # Generate rules for each pattern
             for error_type, confidence, frequency, features in patterns:
-                # Check if we already have a rule for this error type
+                # Check if we already have a non-dormant rule for this error type.
+                # Dormant rules are allowed to be regenerated — add_rule() will
+                # resurrect them with partial confidence rather than creating a duplicate.
                 existing_rules = self.knowledge_base.get_rules(skill_name)
                 already_has_rule = any(
-                    r.source_error_type == error_type for r in existing_rules
+                    r.source_error_type == error_type
+                    and r.status != RuleStatus.DORMANT
+                    for r in existing_rules
                 )
 
                 if not already_has_rule:
@@ -519,6 +523,7 @@ class LearningEngine:
                 already_has_recovery = any(
                     r.source_error_type == error_type
                     and r.rule_type == RuleType.RECOVERY
+                    and r.status != RuleStatus.DORMANT
                     for r in existing_rules
                 )
                 if not already_has_recovery:

@@ -6,8 +6,9 @@ Unified interface with declarative skill loading and knowledge application
 
 import logging
 from pathlib import Path
-from typing import Optional, Dict, List, Any
-from dataclasses import dataclass
+from typing import Optional, Dict, List, Any, Set
+from dataclasses import dataclass, field
+from collections import defaultdict
 
 from knowledge import KnowledgeBase, RuleGenerator
 from skills import SkillRegistry, ExecutionContext
@@ -88,6 +89,18 @@ class SkillForge:
         self.tasks_succeeded = 0
         self.tasks_failed = 0
 
+        # Auto-learning tracking (per skill)
+        # Trigger a learning cycle when enough uncovered evidence has accumulated.
+        # "Uncovered" = error type not addressed by any existing non-dormant rule.
+        # Two independent triggers:
+        #   1. Enough distinct uncovered error types seen (default: 2)
+        #   2. Raw error volume since last cycle crosses the ceiling (default: 20)
+        # Both are per-skill so high-traffic skills don't drown low-traffic ones.
+        self._errors_since_cycle: Dict[str, int] = defaultdict(int)
+        self._uncovered_since_cycle: Dict[str, Set[str]] = defaultdict(set)
+        self._auto_learn_min_uncovered: int = 2
+        self._auto_learn_max_errors: int = 20
+
         logger.info(f"SkillForge initialized with {len(self.skill_registry.list_skills())} skills")
 
     def execute(self,
@@ -165,6 +178,10 @@ class SkillForge:
                     rules_applied=result.rules_applied,
                 )
 
+        # Auto-trigger learning if uncovered evidence has accumulated
+        if not result.success:
+            self._maybe_auto_learn(skill.name, result.errors)
+
         # Record step-level errors for learning
         for step in result.steps:
             for error_msg in step.errors:
@@ -193,6 +210,45 @@ class SkillForge:
             rules_applied=result.rules_applied,
             execution_time_ms=result.execution_time_ms,
         )
+
+    def _maybe_auto_learn(self, skill_name: str, errors: List[str]):
+        """Auto-trigger a learning cycle when uncovered evidence warrants it.
+
+        Two conditions (either triggers the cycle):
+          1. New distinct error types not covered by existing rules >= threshold
+          2. Total raw errors since last cycle >= ceiling (volume safeguard)
+
+        After triggering, per-skill counters reset so the next cycle starts fresh.
+        This keeps high-traffic skills from triggering every execution while ensuring
+        low-traffic skills eventually trigger when they have genuinely new signals.
+        """
+        if not errors:
+            return
+
+        covered_types = {
+            r.source_error_type
+            for r in self.knowledge_base.get_rules(skill_name)
+        }
+
+        for error in errors:
+            error_type = self._classify_error(error)
+            self._errors_since_cycle[skill_name] += 1
+            if error_type not in covered_types:
+                self._uncovered_since_cycle[skill_name].add(error_type)
+
+        uncovered_count = len(self._uncovered_since_cycle[skill_name])
+        total_errors = self._errors_since_cycle[skill_name]
+
+        if (uncovered_count >= self._auto_learn_min_uncovered
+                or total_errors >= self._auto_learn_max_errors):
+            logger.info(
+                f"Auto-triggering learning for '{skill_name}': "
+                f"{uncovered_count} uncovered error type(s), "
+                f"{total_errors} error(s) since last cycle"
+            )
+            self.run_learning_cycle()
+            self._errors_since_cycle[skill_name] = 0
+            self._uncovered_since_cycle[skill_name] = set()
 
     @staticmethod
     def _build_error_classification() -> Dict[str, str]:
@@ -298,6 +354,8 @@ class SkillForge:
         self.tasks_executed = 0
         self.tasks_succeeded = 0
         self.tasks_failed = 0
+        self._errors_since_cycle.clear()
+        self._uncovered_since_cycle.clear()
         self.learning_engine.clear_data()
 
         # Re-initialize tool registry and skill registry to reset state

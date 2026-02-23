@@ -26,6 +26,13 @@ class RuleType(Enum):
     RECOVERY = "recovery"          # Mid-execution error recovery
 
 
+class RuleStatus(Enum):
+    """Lifecycle states for a rule"""
+    ACTIVE = "active"        # Firing normally
+    PROBATION = "probation"  # Underperforming; still fires but under watch
+    DORMANT = "dormant"      # Retired; does not fire; can be resurrected
+
+
 class ConditionOperator(Enum):
     """Operators for rule conditions"""
     CONTAINS = "contains"
@@ -221,12 +228,25 @@ class Rule:
     # For human readability
     description: str = ""
 
+    # Lifecycle state
+    status: RuleStatus = RuleStatus.ACTIVE
+
     @property
     def effectiveness(self) -> float:
         """Calculate how effective this rule has been"""
         if self.times_applied == 0:
             return self.confidence  # Use initial confidence if never applied
         return self.times_successful / self.times_applied
+
+    @property
+    def effective_confidence(self) -> float:
+        """Confidence decayed by staleness (inactive rules become less trusted)."""
+        if self.last_applied is None:
+            return self.confidence
+        days_since = (datetime.now() - self.last_applied).days
+        # Decay 10% per 30 days of inactivity, floor at 50% of original confidence
+        staleness = max(0.5, 1.0 - (days_since / 30) * 0.1)
+        return self.confidence * staleness
 
     def matches(self, context: Dict[str, Any]) -> bool:
         """Check if all conditions match the context"""
@@ -250,11 +270,62 @@ class Rule:
         return result
 
     def record_outcome(self, successful: bool):
-        """Record the outcome of applying this rule"""
+        """Record the outcome of applying this rule."""
         if successful:
             self.times_successful += 1
-        # Recalculate confidence with Bayesian update
-        self.confidence = (self.confidence * 0.7) + (self.effectiveness * 0.3)
+        # Adaptive EMA: prior dominates with few samples, observations dominate later.
+        # prior_weight = 2/(n+2): starts ~0.67 at n=1, falls to ~0.09 at n=20.
+        n = self.times_applied
+        prior_weight = 2.0 / (n + 2)
+        self.confidence = prior_weight * self.confidence + (1 - prior_weight) * self.effectiveness
+        self._check_lifecycle()
+
+    def _check_lifecycle(self):
+        """Transition rule lifecycle state based on observed effectiveness.
+
+        Thresholds differ by rule type — a PREVENTION rule that wrongly blocks
+        tasks is more costly than a RECOVERY rule that fires unnecessarily.
+        ACTIVE  -> PROBATION : effectiveness below threshold after min applications
+        PROBATION -> ACTIVE  : effectiveness recovers above threshold (with hysteresis)
+        PROBATION -> DORMANT : sustained underperformance after extended observation
+        DORMANT rules do not self-transition; resurrection happens via add_rule().
+        """
+        if self.status == RuleStatus.DORMANT:
+            return  # dormant rules don't self-transition
+
+        min_applications = 5
+        if self.times_applied < min_applications:
+            return  # not enough evidence to make a lifecycle call
+
+        thresholds = {
+            RuleType.PREVENTION: 0.45,    # aggressive — false blocks are costly
+            RuleType.VALIDATION: 0.30,    # lenient — spurious warnings are low cost
+            RuleType.RECOVERY: 0.25,      # very lenient — unnecessary recovery is mostly harmless
+            RuleType.TRANSFORMATION: 0.35,
+            RuleType.OPTIMIZATION: 0.30,
+        }
+        threshold = thresholds.get(self.rule_type, 0.35)
+        eff = self.effectiveness
+
+        if self.status == RuleStatus.ACTIVE:
+            if eff < threshold:
+                self.status = RuleStatus.PROBATION
+                logger.info(
+                    f"Rule '{self.name}' entered probation "
+                    f"(effectiveness={eff:.2f}, threshold={threshold:.2f})"
+                )
+
+        elif self.status == RuleStatus.PROBATION:
+            if eff >= threshold * 1.1:  # 10% hysteresis to prevent oscillation
+                self.status = RuleStatus.ACTIVE
+                logger.info(f"Rule '{self.name}' recovered to active (effectiveness={eff:.2f})")
+            elif self.times_applied >= 15 and eff < threshold * 0.7:
+                # Sustained underperformance with enough evidence → dormant
+                self.status = RuleStatus.DORMANT
+                logger.info(
+                    f"Rule '{self.name}' moved to dormant "
+                    f"(effectiveness={eff:.2f} after {self.times_applied} applications)"
+                )
 
     def to_dict(self) -> Dict:
         return {
@@ -270,6 +341,7 @@ class Rule:
             'created_at': self.created_at.isoformat(),
             'last_applied': self.last_applied.isoformat() if self.last_applied else None,
             'description': self.description,
+            'status': self.status.value,
         }
 
     @classmethod
@@ -287,6 +359,7 @@ class Rule:
             created_at=datetime.fromisoformat(data['created_at']) if data.get('created_at') else datetime.now(),
             last_applied=datetime.fromisoformat(data['last_applied']) if data.get('last_applied') else None,
             description=data.get('description', ''),
+            status=RuleStatus(data.get('status', 'active')),  # backward compat
         )
 
     def __str__(self) -> str:
@@ -337,12 +410,40 @@ class KnowledgeBase:
             logger.error(f"Error saving rules: {e}")
 
     def add_rule(self, skill_name: str, rule: Rule):
-        """Add a new rule for a skill"""
-        # Check for duplicate
+        """Add a new rule for a skill.
+
+        For duplicate detection we check both rule ID and source_error_type+rule_type,
+        since the learning cycle regenerates rules with new IDs each cycle.
+
+        Dormant rules are resurrected with partial confidence (not fully reset —
+        the degradation history matters). Probation rules get a small boost.
+        Active rules are left alone; we don't override a working rule's confidence
+        just because the learning cycle re-derived it.
+        """
+        # Exact ID match
         for existing in self.rules_by_skill[skill_name]:
             if existing.id == rule.id:
-                # Update existing
+                if existing.status == RuleStatus.ACTIVE:
+                    return  # don't touch a working rule
                 existing.confidence = max(existing.confidence, rule.confidence)
+                return
+
+        # Semantic match: same error type and rule type (learning cycle re-derived it)
+        for existing in self.rules_by_skill[skill_name]:
+            if (existing.source_error_type == rule.source_error_type
+                    and existing.rule_type == rule.rule_type):
+                if existing.status == RuleStatus.DORMANT:
+                    # Resurrection: partial confidence — don't erase the degradation signal
+                    existing.confidence = min(rule.confidence * 0.6, 0.5)
+                    existing.status = RuleStatus.ACTIVE
+                    logger.info(
+                        f"Resurrected dormant rule '{existing.name}' "
+                        f"(confidence={existing.confidence:.2f})"
+                    )
+                elif existing.status == RuleStatus.PROBATION:
+                    # Slight boost from new evidence, but don't override the trend
+                    existing.confidence = existing.confidence * 0.7 + rule.confidence * 0.3
+                # ACTIVE: don't interfere
                 return
 
         self.rules_by_skill[skill_name].append(rule)
@@ -356,11 +457,16 @@ class KnowledgeBase:
 
     def get_applicable_rules(self, skill_name: str, context: Dict[str, Any],
                             min_confidence: float = 0.3) -> List[Rule]:
-        """Get rules that match the given context"""
+        """Get rules that match the given context.
+
+        Dormant rules are excluded entirely — they hold knowledge but don't fire.
+        Probation rules still fire; they're just under observation.
+        Sorted by effective_confidence (confidence × staleness factor).
+        """
         rules = self.get_rules(skill_name, min_confidence)
+        rules = [r for r in rules if r.status != RuleStatus.DORMANT]
         applicable = [r for r in rules if r.matches(context)]
-        # Sort by confidence descending
-        applicable.sort(key=lambda r: r.confidence, reverse=True)
+        applicable.sort(key=lambda r: r.effective_confidence, reverse=True)
         return applicable
 
     def apply_rules(self, skill_name: str, context: Dict[str, Any],
@@ -397,18 +503,24 @@ class KnowledgeBase:
 
     def get_statistics(self) -> Dict[str, Any]:
         """Get knowledge base statistics"""
-        total_rules = len(self.rule_index)
-        total_applications = sum(r.times_applied for r in self.rule_index.values())
-        total_successes = sum(r.times_successful for r in self.rule_index.values())
+        all_rules = list(self.rule_index.values())
+        total_rules = len(all_rules)
+        total_applications = sum(r.times_applied for r in all_rules)
+        total_successes = sum(r.times_successful for r in all_rules)
 
         by_skill = {
             skill: len(rules) for skill, rules in self.rules_by_skill.items()
         }
 
         avg_confidence = (
-            sum(r.confidence for r in self.rule_index.values()) / total_rules
+            sum(r.confidence for r in all_rules) / total_rules
             if total_rules > 0 else 0
         )
+
+        by_status = {
+            status.value: sum(1 for r in all_rules if r.status == status)
+            for status in RuleStatus
+        }
 
         return {
             'total_rules': total_rules,
@@ -417,6 +529,7 @@ class KnowledgeBase:
             'success_rate': total_successes / total_applications if total_applications > 0 else 0,
             'average_confidence': avg_confidence,
             'rules_by_skill': by_skill,
+            'rules_by_status': by_status,
         }
 
 
